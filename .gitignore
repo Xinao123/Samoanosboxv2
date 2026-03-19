@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.db
+dist/
+build/
+*.spec
+*.exe
+.samoanosbox/
+/data/
+.env

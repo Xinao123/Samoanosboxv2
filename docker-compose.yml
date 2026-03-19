@@ -1,0 +1,12 @@
+services:
+  samoanosbox:
+    build: ./server
+    container_name: samoanosbox-server
+    restart: unless-stopped
+    ports:
+      - "7000:7000"
+    volumes:
+      - samoanosbox-data:/data
+
+volumes:
+  samoanosbox-data:
