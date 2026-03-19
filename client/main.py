@@ -1,6 +1,6 @@
 """
 SamoanosBox v2 - GUI (Flet 0.25)
-Fila de uploads + resume de download + verificacao de integridade.
+Fila de uploads + resume de download + verificacao + cancelamento de backup.
 """
 import flet as ft
 import threading
@@ -81,6 +81,7 @@ def main(page: ft.Page):
     # ── Fila de uploads ──
     upload_queue = queue.Queue()
     upload_worker_running = False
+    active_backups = {}  # file_id → {"cancel": False}
 
     # ══════════════════════════════════════
     #   HELPERS
@@ -298,7 +299,10 @@ def main(page: ft.Page):
         snack(f"Compartilhado: {file_name} (P2P ativo)")
         refresh_files()
 
-        # Upload background pro server
+        # Upload background pro server com cancelamento
+        backup_state = {"cancel": False}
+        active_backups[file_id] = backup_state
+
         def bg_upload():
             try:
                 bg_upload_text.value = f"Backup: {file_name}..."
@@ -308,6 +312,8 @@ def main(page: ft.Page):
                     pass
 
                 def on_prog(sent, total, speed):
+                    if backup_state["cancel"]:
+                        raise Exception("Backup cancelado")
                     pct = int(sent / total * 100) if total > 0 else 100
                     bg_upload_text.value = f"Backup: {file_name} {pct}% ({speed:.1f} MB/s)"
                     try:
@@ -319,11 +325,16 @@ def main(page: ft.Page):
                 bg_upload_text.value = ""
                 refresh_files()
             except Exception as ex:
-                bg_upload_text.value = f"Backup falhou: {ex}"
+                if "cancelado" in str(ex).lower():
+                    bg_upload_text.value = ""
+                else:
+                    bg_upload_text.value = f"Backup falhou: {ex}"
                 try:
                     page.update()
                 except Exception:
                     pass
+            finally:
+                active_backups.pop(file_id, None)
 
         threading.Thread(target=bg_upload, daemon=True).start()
 
@@ -531,13 +542,18 @@ def main(page: ft.Page):
 
         threading.Thread(target=run, daemon=True).start()
 
-    # ── Delete ──
+    # ── Delete com cancelamento de backup ──
 
     def confirm_delete(file_id, filename):
         def yes(e):
             dlg.open = False
             page.update()
             try:
+                # Cancela backup em andamento se houver
+                backup = active_backups.get(file_id)
+                if backup:
+                    backup["cancel"] = True
+
                 api.delete_file(file_id)
                 p2p.unshare_file(file_id)
                 cfg.get("shared_files", {}).pop(str(file_id), None)
