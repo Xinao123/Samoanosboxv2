@@ -7,6 +7,15 @@ services:
       - "7000:7000"
     volumes:
       - samoanosbox-data:/data
+    environment:
+      - UPLOAD_DIR=/data/uploads
+      - DB_PATH=/data/samoanosbox.db
+      - PORT=7000
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:7000/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
 volumes:
   samoanosbox-data:

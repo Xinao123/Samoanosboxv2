@@ -1,3 +1,5 @@
 flet==0.25.2
 httpx==0.28.*
 websocket-client==1.8.*
+pystray==0.19.*
+Pillow==10.*

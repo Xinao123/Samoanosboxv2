@@ -1,6 +1,6 @@
 """
-SamoanosBox v2 - GUI (Flet 0.25)
-Fila de uploads + resume de download + verificacao + cancelamento de backup.
+SamoanosBox v2.1 - GUI (Flet 0.25)
+Tray icon, tempo estimado na lista, uploader destacado, drag-drop zone.
 """
 import flet as ft
 import threading
@@ -8,6 +8,7 @@ import json
 import time
 import hashlib
 import queue
+import sys
 from pathlib import Path
 from datetime import datetime
 
@@ -41,6 +42,20 @@ def format_eta(sent, total, speed):
     return f"~{r / 3600:.1f}h"
 
 
+def estimate_download_time(size_bytes: int, is_p2p: bool) -> str:
+    """Estima tempo baseado em velocidades tipicas."""
+    if is_p2p:
+        speed = 30 * 1e6  # ~30 MB/s P2P tipico
+    else:
+        speed = 2.5 * 1e6  # ~2.5 MB/s via Starlink
+    secs = size_bytes / speed
+    if secs < 60:
+        return f"~{int(secs)}s"
+    if secs < 3600:
+        return f"~{int(secs / 60)}min"
+    return f"~{secs / 3600:.1f}h"
+
+
 FILE_ICONS = {
     ".zip": ft.Icons.FOLDER_ZIP, ".rar": ft.Icons.FOLDER_ZIP,
     ".7z": ft.Icons.FOLDER_ZIP, ".tar": ft.Icons.FOLDER_ZIP,
@@ -61,6 +76,56 @@ FILE_ICONS = {
 }
 
 
+# ── Tray Icon (Windows) ──
+
+tray_icon = None
+
+
+def setup_tray(on_restore, on_quit):
+    """Configura tray icon. Silencia se pystray nao esta instalado."""
+    global tray_icon
+    try:
+        import pystray
+        from PIL import Image, ImageDraw
+
+        # Cria icone 64x64 programaticamente
+        img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        draw.ellipse([4, 4, 60, 60], fill=(59, 130, 246, 255))
+        draw.polygon([(22, 40), (32, 20), (42, 40)], fill=(255, 255, 255, 255))
+        draw.line([(32, 20), (32, 48)], fill=(255, 255, 255, 255), width=3)
+
+        menu = pystray.Menu(
+            pystray.MenuItem("Abrir SamoanosBox", on_restore, default=True),
+            pystray.MenuItem("Sair", on_quit),
+        )
+        tray_icon = pystray.Icon("SamoanosBox", img, "SamoanosBox", menu)
+        threading.Thread(target=tray_icon.run, daemon=True).start()
+    except ImportError:
+        pass  # pystray nao instalado, sem tray icon
+    except Exception:
+        pass
+
+
+def stop_tray():
+    global tray_icon
+    if tray_icon:
+        try:
+            tray_icon.stop()
+        except Exception:
+            pass
+        tray_icon = None
+
+
+def tray_notify(title: str, msg: str):
+    """Envia notificacao Windows via tray icon."""
+    if tray_icon:
+        try:
+            tray_icon.notify(msg, title)
+        except Exception:
+            pass
+
+
 def main(page: ft.Page):
     cfg = load_config()
     api = SamoanosBoxClient(cfg["server_url"], cfg.get("username", ""))
@@ -77,11 +142,40 @@ def main(page: ft.Page):
 
     files_list = []
     ws_thread = None
-
-    # ── Fila de uploads ──
     upload_queue = queue.Queue()
     upload_worker_running = False
-    active_backups = {}  # file_id → {"cancel": False}
+    active_backups = {}
+
+    # ── Tray: minimizar pra bandeja ──
+
+    def on_tray_restore(icon=None, item=None):
+        page.window.visible = True
+        page.window.focused = True
+        try:
+            page.update()
+        except Exception:
+            pass
+
+    def on_tray_quit(icon=None, item=None):
+        stop_tray()
+        p2p.stop()
+        page.window.destroy()
+
+    def on_window_event(e):
+        if e.data == "close":
+            # Minimiza pra tray em vez de fechar
+            if tray_icon:
+                page.window.visible = False
+                page.update()
+                tray_notify("SamoanosBox", "Rodando na bandeja. P2P ativo.")
+            else:
+                p2p.stop()
+                page.window.destroy()
+
+    page.window.prevent_close = True
+    page.window.on_event = on_window_event
+
+    setup_tray(on_tray_restore, on_tray_quit)
 
     # ══════════════════════════════════════
     #   HELPERS
@@ -231,7 +325,7 @@ def main(page: ft.Page):
         page.update()
         fp.pick_files(allow_multiple=True)
 
-    # ── Upload Worker (processa fila) ──
+    # ── Upload Worker ──
 
     def ensure_upload_worker():
         nonlocal upload_worker_running
@@ -245,10 +339,7 @@ def main(page: ft.Page):
         while not upload_queue.empty():
             item = upload_queue.get()
             pending = upload_queue.qsize()
-            if pending > 0:
-                queue_text.value = f"Na fila: {pending} arquivo(s)"
-            else:
-                queue_text.value = ""
+            queue_text.value = f"Na fila: {pending} arquivo(s)" if pending > 0 else ""
             try:
                 page.update()
             except Exception:
@@ -262,7 +353,6 @@ def main(page: ft.Page):
             pass
 
     def process_share(file_path, file_name, file_size):
-        # Progresso do checksum
         share_progress.visible = True
         share_progress.value = 0
         share_text.value = f"Calculando checksum: {file_name}..."
@@ -288,7 +378,6 @@ def main(page: ft.Page):
                     pass
 
         checksum = sha.hexdigest()
-
         share_text.value = f"Registrando: {file_name}..."
         try:
             page.update()
@@ -312,7 +401,9 @@ def main(page: ft.Page):
         snack(f"Compartilhado: {file_name} (P2P ativo)")
         refresh_files()
 
-        # Upload background pro server com cancelamento
+        # Notifica via tray se janela nao esta visivel
+        tray_notify("SamoanosBox", f"Compartilhado: {file_name}")
+
         backup_state = {"cancel": False}
         active_backups[file_id] = backup_state
 
@@ -351,7 +442,7 @@ def main(page: ft.Page):
 
         threading.Thread(target=bg_upload, daemon=True).start()
 
-    # ── Build file tile com status online/offline ──
+    # ── Build file tile ──
 
     def build_file_tile(f):
         fid = f["id"]
@@ -361,22 +452,34 @@ def main(page: ft.Page):
         )
         is_online = f.get("uploader_online", False)
         on_server = f.get("on_server", False)
+        uploader = f.get("uploader", "?")
 
         if is_online:
             status_icon = ft.Icon(ft.Icons.CIRCLE, size=10, color=ft.Colors.GREEN_400)
-            status_text = f"{f.get('uploader', '?')} (online - P2P direto)"
+            status_label = "online - P2P direto"
             status_color = ft.Colors.GREEN_400
+            time_est = estimate_download_time(f["size"], True)
+            speed_hint = f"P2P {time_est}"
+            speed_color = ft.Colors.GREEN_400
         elif on_server:
             status_icon = ft.Icon(ft.Icons.CLOUD_DONE, size=10, color=ft.Colors.ORANGE_400)
-            status_text = f"{f.get('uploader', '?')} (offline - via server, mais lento)"
+            status_label = "offline - via server"
             status_color = ft.Colors.ORANGE_400
+            time_est = estimate_download_time(f["size"], False)
+            speed_hint = f"Server {time_est}"
+            speed_color = ft.Colors.ORANGE_400
         else:
             status_icon = ft.Icon(ft.Icons.CLOUD_OFF, size=10, color=ft.Colors.RED_400)
-            status_text = f"{f.get('uploader', '?')} (offline - indisponivel)"
+            status_label = "offline - indisponivel"
             status_color = ft.Colors.RED_400
+            speed_hint = ""
+            speed_color = ft.Colors.RED_400
 
         can_download = is_online or on_server
-        is_mine = f.get("uploader", "") == api.username
+        is_mine = uploader == api.username
+
+        # Info row: tamanho | data | tempo estimado
+        info_parts = f'{format_size(f["size"])}  |  {format_ts(f["upload_date"])}'
 
         row_controls = [
             ft.Icon(icon, size=26, color=ft.Colors.BLUE_300),
@@ -388,18 +491,25 @@ def main(page: ft.Page):
                         max_lines=1,
                         overflow=ft.TextOverflow.ELLIPSIS,
                     ),
-                    ft.Row([status_icon, ft.Text(status_text, size=11, color=status_color)], spacing=4),
-                    ft.Text(
-                        f'{format_size(f["size"])}  |  {format_ts(f["upload_date"])}',
-                        size=10, color=ft.Colors.GREY_600,
-                    ),
+                    ft.Row([
+                        ft.Icon(ft.Icons.PERSON, size=10, color=ft.Colors.GREY_500),
+                        ft.Text(uploader, size=11, weight=ft.FontWeight.W_500, color=ft.Colors.BLUE_300),
+                        ft.Container(width=8),
+                        status_icon,
+                        ft.Text(status_label, size=10, color=status_color),
+                    ], spacing=4),
+                    ft.Row([
+                        ft.Text(info_parts, size=10, color=ft.Colors.GREY_600),
+                        ft.Container(width=8),
+                        ft.Text(speed_hint, size=10, color=speed_color) if speed_hint else ft.Container(),
+                    ], spacing=0),
                 ],
                 spacing=2,
                 expand=True,
             ),
             ft.IconButton(
                 ft.Icons.DOWNLOAD_ROUNDED,
-                tooltip="Baixar" if can_download else "Indisponivel",
+                tooltip=f"Baixar ({speed_hint})" if can_download else "Indisponivel",
                 icon_color=ft.Colors.GREEN_400 if can_download else ft.Colors.GREY_700,
                 icon_size=20,
                 disabled=not can_download,
@@ -457,7 +567,7 @@ def main(page: ft.Page):
                     [
                         ft.Icon(ft.Icons.CLOUD_UPLOAD, size=52, color=ft.Colors.GREY_700),
                         ft.Text("Nenhum arquivo ainda", size=15, color=ft.Colors.GREY_500),
-                        ft.Text("Clique em Compartilhar", size=12, color=ft.Colors.GREY_600),
+                        ft.Text("Clique em Compartilhar ou arraste arquivos", size=12, color=ft.Colors.GREY_600),
                     ],
                     horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                     alignment=ft.MainAxisAlignment.CENTER,
@@ -491,6 +601,9 @@ def main(page: ft.Page):
         notification_banner.visible = True
         page.update()
 
+        # Tambem notifica via tray se janela nao visivel
+        tray_notify("SamoanosBox", text)
+
         def hide():
             time.sleep(4)
             notification_banner.visible = False
@@ -501,7 +614,7 @@ def main(page: ft.Page):
 
         threading.Thread(target=hide, daemon=True).start()
 
-    # ── Download inteligente com resume ──
+    # ── Download ──
 
     def do_download(file_info):
         download_progress.visible = True
@@ -540,6 +653,7 @@ def main(page: ft.Page):
                 download_progress.visible = False
                 download_text.value = ""
                 snack(f"Salvo: {Path(saved).name} (verificado)")
+                tray_notify("SamoanosBox", f"Download completo: {Path(saved).name}")
             except ApiError as ex:
                 download_progress.visible = False
                 download_text.value = ""
@@ -562,18 +676,16 @@ def main(page: ft.Page):
 
         threading.Thread(target=run, daemon=True).start()
 
-    # ── Delete com cancelamento de backup ──
+    # ── Delete ──
 
     def confirm_delete(file_id, filename):
         def yes(e):
             dlg.open = False
             page.update()
             try:
-                # Cancela backup em andamento se houver
                 backup = active_backups.get(file_id)
                 if backup:
                     backup["cancel"] = True
-
                 api.delete_file(file_id)
                 p2p.unshare_file(file_id)
                 cfg.get("shared_files", {}).pop(str(file_id), None)
@@ -609,8 +721,7 @@ def main(page: ft.Page):
         dl_field = ft.TextField(
             label="Pasta de Download",
             value=cfg.get("download_dir", ""),
-            expand=True,
-            border_radius=10,
+            expand=True, border_radius=10,
         )
 
         def save(e):
@@ -635,8 +746,7 @@ def main(page: ft.Page):
                         ft.Divider(),
                         dl_field,
                     ],
-                    spacing=10,
-                    tight=True,
+                    spacing=10, tight=True,
                 ),
                 width=400,
             ),
@@ -746,7 +856,7 @@ def main(page: ft.Page):
         ws_thread = threading.Thread(target=run, daemon=True)
         ws_thread.start()
 
-    # ── Restaura shares de sessoes anteriores ──
+    # ── Restaura shares ──
 
     def restore_shares():
         shared = cfg.get("shared_files", {})
@@ -758,8 +868,26 @@ def main(page: ft.Page):
         save_config(cfg)
 
     # ══════════════════════════════════════
-    #   LAYOUT PRINCIPAL
+    #   LAYOUT
     # ══════════════════════════════════════
+
+    # Drop zone visual (abre picker ao clicar)
+    drop_zone = ft.Container(
+        content=ft.Column(
+            [
+                ft.Icon(ft.Icons.UPLOAD_FILE, size=28, color=ft.Colors.BLUE_400),
+                ft.Text("Arraste arquivos aqui ou clique", size=12, color=ft.Colors.GREY_500),
+            ],
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            alignment=ft.MainAxisAlignment.CENTER,
+            spacing=4,
+        ),
+        border=ft.border.all(2, "#20ffffff"),
+        border_radius=10,
+        padding=ft.padding.symmetric(vertical=16),
+        on_click=open_picker,
+        ink=True,
+    )
 
     main_view = ft.Column(
         [
@@ -790,13 +918,14 @@ def main(page: ft.Page):
                 padding=ft.padding.symmetric(horizontal=20, vertical=8),
                 border=ft.border.only(bottom=ft.BorderSide(1, "#15ffffff")),
             ),
-            # ── Notification ──
+            # ── Banners ──
             notification_banner,
             connection_banner,
             # ── Toolbar ──
             ft.Container(
                 content=ft.Column(
                     [
+                        drop_zone,
                         ft.Row(
                             [
                                 ft.Container(content=search_field, expand=True),
