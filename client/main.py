@@ -157,9 +157,10 @@ def main(page: ft.Page):
         on_change=lambda e: filter_files(e.control.value))
 
     def pick_result(e):
-        if e.files:
-            for f in e.files:
-                start_share(f.path, f.name, f.size)
+    if not e.files:
+        return
+    for f in e.files:
+        start_share(f.path, f.name, f.size)
 
     file_picker = ft.FilePicker(on_result=pick_result)
     page.overlay.append(file_picker)
@@ -508,8 +509,7 @@ def main(page: ft.Page):
                                       style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=10),
                                                            bgcolor=ft.Colors.BLUE_700, color=ft.Colors.WHITE),
                                       height=40,
-                                      on_click=lambda e: file_picker.pick_files(
-                                          allow_multiple=True, dialog_title="Selecione arquivos"))], spacing=12),
+                                      on_click=lambda e: file_picker.pick_files(allow_multiple=True)
             upload_progress, upload_text, bg_upload_text,
             download_progress, download_text,
         ], spacing=4), padding=ft.padding.symmetric(horizontal=20, vertical=8)),
