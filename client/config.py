@@ -6,7 +6,7 @@ CONFIG_DIR = Path.home() / ".samoanosbox"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
 DEFAULTS = {
-    "server_url": "http://localhost:7000",
+    "server_url": "http://localhost:8000",
     "username": "",
     "download_dir": str(Path.home() / "Downloads"),
     "shared_files": {},  # file_id → local_path

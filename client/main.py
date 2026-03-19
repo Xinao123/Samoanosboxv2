@@ -1,12 +1,13 @@
 """
 SamoanosBox v2 - GUI (Flet 0.25)
-P2P direto + fallback pro server. Lista de arquivos com status do dono.
+Fila de uploads + resume de download + verificacao de integridade.
 """
 import flet as ft
 import threading
 import json
 import time
 import hashlib
+import queue
 from pathlib import Path
 from datetime import datetime
 
@@ -75,8 +76,11 @@ def main(page: ft.Page):
     page.theme = ft.Theme(color_scheme_seed=ft.Colors.BLUE_ACCENT)
 
     files_list = []
-    uploading = False
     ws_thread = None
+
+    # ── Fila de uploads ──
+    upload_queue = queue.Queue()
+    upload_worker_running = False
 
     # ══════════════════════════════════════
     #   HELPERS
@@ -173,8 +177,9 @@ def main(page: ft.Page):
     # ══════════════════════════════════════
 
     files_column = ft.Column(scroll=ft.ScrollMode.AUTO, expand=True, spacing=4)
-    upload_progress = ft.ProgressBar(visible=False, value=0, bar_height=6, border_radius=5)
-    upload_text = ft.Text("", size=12)
+    share_progress = ft.ProgressBar(visible=False, value=0, bar_height=6, border_radius=5)
+    share_text = ft.Text("", size=12)
+    queue_text = ft.Text("", size=11, color=ft.Colors.GREY_500)
     bg_upload_text = ft.Text("", size=11, color=ft.Colors.GREY_500)
     download_progress = ft.ProgressBar(visible=False, value=0, bar_height=6, border_radius=5)
     download_text = ft.Text("", size=12)
@@ -192,13 +197,18 @@ def main(page: ft.Page):
         on_change=lambda e: filter_files(e.control.value),
     )
 
-    # ── File Picker (recriado a cada clique pra evitar bug) ──
+    # ── File Picker ──
 
     def pick_result(e):
         if not e.files:
             return
         for f in e.files:
-            start_share(f.path, f.name, f.size)
+            upload_queue.put({"path": f.path, "name": f.name, "size": f.size})
+        pending = upload_queue.qsize()
+        if pending > 0:
+            queue_text.value = f"Na fila: {pending} arquivo(s)"
+            page.update()
+        ensure_upload_worker()
 
     def open_picker(e):
         page.overlay.clear()
@@ -206,6 +216,116 @@ def main(page: ft.Page):
         page.overlay.append(fp)
         page.update()
         fp.pick_files(allow_multiple=True)
+
+    # ── Upload Worker (processa fila) ──
+
+    def ensure_upload_worker():
+        nonlocal upload_worker_running
+        if upload_worker_running:
+            return
+        upload_worker_running = True
+        threading.Thread(target=upload_worker, daemon=True).start()
+
+    def upload_worker():
+        nonlocal upload_worker_running
+        while not upload_queue.empty():
+            item = upload_queue.get()
+            pending = upload_queue.qsize()
+            if pending > 0:
+                queue_text.value = f"Na fila: {pending} arquivo(s)"
+            else:
+                queue_text.value = ""
+            try:
+                page.update()
+            except Exception:
+                pass
+            process_share(item["path"], item["name"], item["size"])
+        queue_text.value = ""
+        upload_worker_running = False
+        try:
+            page.update()
+        except Exception:
+            pass
+
+    def process_share(file_path, file_name, file_size):
+        # Progresso do checksum
+        share_progress.visible = True
+        share_progress.value = 0
+        share_text.value = f"Calculando checksum: {file_name}..."
+        try:
+            page.update()
+        except Exception:
+            pass
+
+        sha = hashlib.sha256()
+        processed = 0
+        with open(file_path, "rb") as f:
+            while chunk := f.read(65536):
+                sha.update(chunk)
+                processed += len(chunk)
+                share_progress.value = processed / file_size if file_size > 0 else 1
+                share_text.value = (
+                    f"Checksum: {file_name} "
+                    f"{int(processed / file_size * 100) if file_size > 0 else 100}%"
+                )
+                try:
+                    page.update()
+                except Exception:
+                    pass
+
+        checksum = sha.hexdigest()
+
+        share_text.value = f"Registrando: {file_name}..."
+        try:
+            page.update()
+        except Exception:
+            pass
+
+        try:
+            file_id = api.register_file(file_name, file_size, checksum)
+        except Exception as ex:
+            share_progress.visible = False
+            share_text.value = ""
+            snack(f"Erro ao registrar: {ex}", error=True)
+            return
+
+        p2p.share_file(file_id, file_path)
+        cfg.setdefault("shared_files", {})[str(file_id)] = file_path
+        save_config(cfg)
+
+        share_progress.visible = False
+        share_text.value = ""
+        snack(f"Compartilhado: {file_name} (P2P ativo)")
+        refresh_files()
+
+        # Upload background pro server
+        def bg_upload():
+            try:
+                bg_upload_text.value = f"Backup: {file_name}..."
+                try:
+                    page.update()
+                except Exception:
+                    pass
+
+                def on_prog(sent, total, speed):
+                    pct = int(sent / total * 100) if total > 0 else 100
+                    bg_upload_text.value = f"Backup: {file_name} {pct}% ({speed:.1f} MB/s)"
+                    try:
+                        page.update()
+                    except Exception:
+                        pass
+
+                api.upload_to_server(file_id, file_path, on_progress=on_prog)
+                bg_upload_text.value = ""
+                refresh_files()
+            except Exception as ex:
+                bg_upload_text.value = f"Backup falhou: {ex}"
+                try:
+                    page.update()
+                except Exception:
+                    pass
+
+        threading.Thread(target=bg_upload, daemon=True).start()
 
     # ── Build file tile com status online/offline ──
 
@@ -256,7 +376,7 @@ def main(page: ft.Page):
                     ),
                     ft.IconButton(
                         ft.Icons.DOWNLOAD_ROUNDED,
-                        tooltip="Baixar",
+                        tooltip="Baixar" if can_download else "Indisponivel",
                         icon_color=ft.Colors.GREEN_400 if can_download else ft.Colors.GREY_700,
                         icon_size=20,
                         disabled=not can_download,
@@ -350,49 +470,7 @@ def main(page: ft.Page):
 
         threading.Thread(target=hide, daemon=True).start()
 
-    # ── Compartilhar arquivo (P2P + upload background) ──
-
-    def start_share(file_path, file_name, file_size):
-        sha = hashlib.sha256()
-        with open(file_path, "rb") as f:
-            while chunk := f.read(8192):
-                sha.update(chunk)
-        checksum = sha.hexdigest()
-
-        try:
-            file_id = api.register_file(file_name, file_size, checksum)
-        except Exception as ex:
-            snack(f"Erro ao registrar: {ex}", error=True)
-            return
-
-        p2p.share_file(file_id, file_path)
-
-        cfg.setdefault("shared_files", {})[str(file_id)] = file_path
-        save_config(cfg)
-
-        snack(f"Compartilhado: {file_name} (P2P ativo)")
-        refresh_files()
-
-        def bg_upload():
-            try:
-                bg_upload_text.value = f"Subindo pro server: {file_name}..."
-                page.update()
-
-                def on_prog(sent, total, speed):
-                    pct = int(sent / total * 100) if total > 0 else 100
-                    bg_upload_text.value = f"Backup: {file_name} {pct}% ({speed:.1f} MB/s)"
-                    page.update()
-
-                api.upload_to_server(file_id, file_path, on_progress=on_prog)
-                bg_upload_text.value = ""
-                refresh_files()
-            except Exception as ex:
-                bg_upload_text.value = f"Backup falhou: {ex}"
-                page.update()
-
-        threading.Thread(target=bg_upload, daemon=True).start()
-
-    # ── Download inteligente ──
+    # ── Download inteligente com resume ──
 
     def do_download(file_info):
         download_progress.visible = True
@@ -410,11 +488,17 @@ def main(page: ft.Page):
                         f"DL {format_size(recv)}/{format_size(total)} "
                         f"{pct}% | {speed:.1f} MB/s {eta}"
                     )
-                    page.update()
+                    try:
+                        page.update()
+                    except Exception:
+                        pass
 
                 def on_status(s):
                     download_text.value = s
-                    page.update()
+                    try:
+                        page.update()
+                    except Exception:
+                        pass
 
                 saved = api.download_file(
                     file_info,
@@ -424,12 +508,26 @@ def main(page: ft.Page):
                 )
                 download_progress.visible = False
                 download_text.value = ""
-                snack(f"Salvo: {Path(saved).name}")
+                snack(f"Salvo: {Path(saved).name} (verificado)")
+            except ApiError as ex:
+                download_progress.visible = False
+                download_text.value = ""
+                if "checksum" in ex.detail.lower():
+                    snack(f"Arquivo corrompido! {ex.detail}", error=True)
+                else:
+                    snack(f"Erro: {ex.detail}", error=True)
+                try:
+                    page.update()
+                except Exception:
+                    pass
             except Exception as ex:
                 download_progress.visible = False
                 download_text.value = ""
                 snack(f"Erro: {ex}", error=True)
-                page.update()
+                try:
+                    page.update()
+                except Exception:
+                    pass
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -547,15 +645,13 @@ def main(page: ft.Page):
                     fsize = format_size(data.get("size", 0))
                     show_notification(
                         f"{who} compartilhou: {fname} ({fsize})",
-                        ft.Icons.UPLOAD_FILE,
-                        ft.Colors.BLUE_400,
+                        ft.Icons.UPLOAD_FILE, ft.Colors.BLUE_400,
                     )
                     refresh_files()
                 elif ev == "file_deleted" and who != api.username:
                     show_notification(
                         f"{who} removeu: {data.get('filename', '?')}",
-                        ft.Icons.DELETE,
-                        ft.Colors.ORANGE_400,
+                        ft.Icons.DELETE, ft.Colors.ORANGE_400,
                     )
                     refresh_files()
                 elif ev == "user_status":
@@ -564,17 +660,9 @@ def main(page: ft.Page):
                     status = data.get("status", "")
                     if who != api.username:
                         if status == "online":
-                            show_notification(
-                                f"{who} entrou",
-                                ft.Icons.PERSON_ADD,
-                                ft.Colors.GREEN_400,
-                            )
+                            show_notification(f"{who} entrou", ft.Icons.PERSON_ADD, ft.Colors.GREEN_400)
                         else:
-                            show_notification(
-                                f"{who} saiu",
-                                ft.Icons.PERSON_REMOVE,
-                                ft.Colors.GREY_500,
-                            )
+                            show_notification(f"{who} saiu", ft.Icons.PERSON_REMOVE, ft.Colors.GREY_500)
                     refresh_files()
                     page.update()
             except Exception:
@@ -593,11 +681,8 @@ def main(page: ft.Page):
         def run():
             try:
                 ws = ws_lib.WebSocketApp(
-                    ws_url,
-                    on_open=on_open,
-                    on_message=on_message,
-                    on_error=on_error,
-                    on_close=on_close,
+                    ws_url, on_open=on_open,
+                    on_message=on_message, on_error=on_error, on_close=on_close,
                 )
                 ws.run_forever(ping_interval=30, ping_timeout=10)
             except Exception:
@@ -606,7 +691,7 @@ def main(page: ft.Page):
         ws_thread = threading.Thread(target=run, daemon=True)
         ws_thread.start()
 
-    # ── Restaura arquivos compartilhados de sessoes anteriores ──
+    # ── Restaura shares de sessoes anteriores ──
 
     def restore_shares():
         shared = cfg.get("shared_files", {})
@@ -673,8 +758,9 @@ def main(page: ft.Page):
                             ],
                             spacing=12,
                         ),
-                        upload_progress,
-                        upload_text,
+                        share_progress,
+                        share_text,
+                        queue_text,
                         bg_upload_text,
                         download_progress,
                         download_text,
@@ -713,7 +799,7 @@ def main(page: ft.Page):
         refresh_files()
         start_ws()
 
-    # ── Auto-enter se ja tem username salvo ──
+    # ── Auto-enter ──
 
     if cfg.get("username"):
         api.server_url = cfg["server_url"]

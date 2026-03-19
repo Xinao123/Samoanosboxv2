@@ -1,6 +1,7 @@
 """
 SamoanosBox v2 - API Client
-Download inteligente: P2P direto se peer online, server se offline.
+Download com resume + verificacao SHA-256.
+Upload pro server com progresso.
 """
 import httpx
 import hashlib
@@ -62,7 +63,7 @@ class SamoanosBoxClient:
             ))
             return data["file_id"]
 
-    # ── Upload pro server (fallback em background) ──
+    # ── Upload pro server (fallback) ──
 
     def upload_to_server(self, file_id: int, file_path: str,
                          on_progress: Callable[[int, int, float], None] | None = None):
@@ -87,8 +88,10 @@ class SamoanosBoxClient:
                     break
                 headers = {**self._h, "Content-Type": "application/octet-stream"}
                 with httpx.Client(timeout=300) as c:
-                    self._check(c.post(self._url(f"/api/upload/{upload_id}/chunk"),
-                                       content=chunk, headers=headers))
+                    self._check(c.post(
+                        self._url(f"/api/upload/{upload_id}/chunk"),
+                        content=chunk, headers=headers,
+                    ))
                 sent += len(chunk)
                 elapsed = time.monotonic() - t0
                 speed = (sent / elapsed / 1e6) if elapsed > 0 else 0
@@ -96,18 +99,16 @@ class SamoanosBoxClient:
                     on_progress(sent, total, speed)
 
         with httpx.Client(timeout=60) as c:
-            self._check(c.post(self._url(f"/api/upload/{upload_id}/complete/{file_id}"),
-                               headers=self._h))
+            self._check(c.post(
+                self._url(f"/api/upload/{upload_id}/complete/{file_id}"),
+                headers=self._h,
+            ))
 
-    # ── Download inteligente: P2P ou server ──
+    # ── Download inteligente com resume e verificacao ──
 
     def download_file(self, file_info: dict, save_dir: str,
                       on_progress: Callable[[int, int, float], None] | None = None,
                       on_status: Callable[[str], None] | None = None) -> str:
-        """
-        Tenta P2P direto. Se falhar, cai pro server.
-        Retorna caminho do arquivo salvo.
-        """
         file_id = file_info["id"]
         filename = file_info["original_name"]
         total = file_info["size"]
@@ -115,14 +116,43 @@ class SamoanosBoxClient:
         p2p_port = file_info.get("p2p_port", 0)
         on_server = file_info.get("on_server", False)
         is_online = file_info.get("uploader_online", False)
+        expected_checksum = file_info.get("checksum", "")
+
+        # Determina caminho de saida e checa arquivo parcial
+        save_path = Path(save_dir) / filename
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Se ja existe completo com mesmo tamanho, renomeia
+        if save_path.exists() and save_path.stat().st_size == total:
+            stem, suffix = save_path.stem, save_path.suffix
+            counter = 1
+            while save_path.exists():
+                save_path = Path(save_dir) / f"{stem} ({counter}){suffix}"
+                counter += 1
+
+        # Checa arquivo parcial pra resume
+        partial_path = Path(save_dir) / f"{filename}.partial"
+        resume_from = 0
+        if partial_path.exists():
+            resume_from = partial_path.stat().st_size
+            if resume_from >= total:
+                # Arquivo parcial completo ou maior, refaz
+                partial_path.unlink()
+                resume_from = 0
 
         # Tenta P2P direto
         if is_online and p2p_host and p2p_port:
             try:
                 if on_status:
-                    on_status(f"P2P direto de {file_info.get('uploader', '?')}...")
-                return self._download_from_peer(
-                    p2p_host, p2p_port, file_id, filename, total, save_dir, on_progress)
+                    src = "P2P direto" + (" (resumindo)" if resume_from > 0 else "")
+                    on_status(f"{src} de {file_info.get('uploader', '?')}...")
+                result = self._download_stream(
+                    f"http://{p2p_host}:{p2p_port}/download/{file_id}",
+                    {}, partial_path, save_path, total, resume_from, on_progress,
+                    timeout=30,
+                )
+                self._verify_checksum(result, expected_checksum, on_status)
+                return result
             except Exception as e:
                 if on_status:
                     on_status(f"P2P falhou ({e}), tentando server...")
@@ -130,48 +160,85 @@ class SamoanosBoxClient:
         # Fallback pro server
         if on_server:
             if on_status:
-                on_status("Baixando do server (pode ser mais lento)...")
-            return self._download_from_server(file_id, filename, total, save_dir, on_progress)
+                src = "Baixando do server" + (" (resumindo)" if resume_from > 0 else "")
+                on_status(f"{src} (pode ser mais lento)...")
+            result = self._download_stream(
+                self._url(f"/api/files/{file_id}/download"),
+                self._h, partial_path, save_path, total, resume_from, on_progress,
+                timeout=600,
+            )
+            self._verify_checksum(result, expected_checksum, on_status)
+            return result
 
         raise ApiError(404, "Dono offline e arquivo nao esta no server ainda")
 
-    def _download_from_peer(self, host, port, file_id, filename, total, save_dir, on_progress) -> str:
-        url = f"http://{host}:{port}/download/{file_id}"
-        return self._stream_download(url, filename, total, save_dir, on_progress, {})
-
-    def _download_from_server(self, file_id, filename, total, save_dir, on_progress) -> str:
-        url = self._url(f"/api/files/{file_id}/download")
-        return self._stream_download(url, filename, total, save_dir, on_progress, self._h)
-
-    def _stream_download(self, url, filename, total, save_dir, on_progress, headers) -> str:
-        save_path = Path(save_dir) / filename
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-
-        if save_path.exists():
-            stem, suffix = save_path.stem, save_path.suffix
-            counter = 1
-            while save_path.exists():
-                save_path = Path(save_dir) / f"{stem} ({counter}){suffix}"
-                counter += 1
-
+    def _download_stream(self, url: str, headers: dict, partial_path: Path,
+                         final_path: Path, total: int, resume_from: int,
+                         on_progress, timeout: int) -> str:
         t0 = time.monotonic()
-        received = 0
+        received = resume_from
 
-        with httpx.Client(timeout=600, follow_redirects=True) as c:
-            with c.stream("GET", url, headers=headers) as resp:
-                if resp.status_code >= 400:
+        dl_headers = {**headers}
+        if resume_from > 0:
+            dl_headers["Range"] = f"bytes={resume_from}-"
+
+        mode = "ab" if resume_from > 0 else "wb"
+
+        with httpx.Client(timeout=timeout, follow_redirects=True) as c:
+            with c.stream("GET", url, headers=dl_headers) as resp:
+                # Se server nao suporta range, recomeça do zero
+                if resume_from > 0 and resp.status_code == 200:
+                    received = 0
+                    mode = "wb"
+                elif resp.status_code == 206:
+                    pass  # Resume OK
+                elif resp.status_code >= 400:
                     resp.read()
                     raise ApiError(resp.status_code, "Download falhou")
 
-                real_total = int(resp.headers.get("content-length", total))
+                content_length = resp.headers.get("content-length")
+                if content_length:
+                    if resp.status_code == 206:
+                        real_total = resume_from + int(content_length)
+                    else:
+                        real_total = int(content_length)
+                else:
+                    real_total = total
 
-                with open(save_path, "wb") as f:
+                with open(partial_path, mode) as f:
                     for chunk in resp.iter_bytes(chunk_size=CHUNK_SIZE):
                         f.write(chunk)
                         received += len(chunk)
                         elapsed = time.monotonic() - t0
-                        speed = (received / elapsed / 1e6) if elapsed > 0 else 0
+                        speed = ((received - resume_from) / elapsed / 1e6) if elapsed > 0 else 0
                         if on_progress:
                             on_progress(received, real_total, speed)
 
-        return str(save_path)
+        # Renomeia .partial pra arquivo final
+        if final_path.exists():
+            stem, suffix = final_path.stem, final_path.suffix
+            counter = 1
+            while final_path.exists():
+                final_path = final_path.parent / f"{stem} ({counter}){suffix}"
+                counter += 1
+
+        partial_path.rename(final_path)
+        return str(final_path)
+
+    def _verify_checksum(self, file_path: str, expected: str, on_status=None):
+        if not expected:
+            return
+
+        if on_status:
+            on_status("Verificando integridade...")
+
+        sha = hashlib.sha256()
+        with open(file_path, "rb") as f:
+            while chunk := f.read(8192):
+                sha.update(chunk)
+
+        actual = sha.hexdigest()
+        if actual != expected:
+            if on_status:
+                on_status(f"AVISO: checksum diferente! Arquivo pode estar corrompido.")
+            raise ApiError(0, f"Checksum invalido: esperado {expected[:12]}... obteve {actual[:12]}...")
