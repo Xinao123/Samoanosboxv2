@@ -190,6 +190,19 @@ def main(page: ft.Page):
         visible=False,
         padding=ft.padding.symmetric(horizontal=16, vertical=8),
     )
+    connection_banner = ft.Container(
+        visible=False,
+        content=ft.Row(
+            [
+                ft.ProgressRing(width=14, height=14, stroke_width=2),
+                ft.Text("Reconectando ao servidor...", size=12, color=ft.Colors.ORANGE_400),
+            ],
+            spacing=8,
+        ),
+        padding=ft.padding.symmetric(horizontal=16, vertical=6),
+        bgcolor="#33ff9800",
+        border_radius=8,
+    )
 
     search_field = ft.TextField(
         hint_text="Buscar arquivos...", prefix_icon=ft.Icons.SEARCH,
@@ -363,44 +376,51 @@ def main(page: ft.Page):
             status_color = ft.Colors.RED_400
 
         can_download = is_online or on_server
+        is_mine = f.get("uploader", "") == api.username
+
+        row_controls = [
+            ft.Icon(icon, size=26, color=ft.Colors.BLUE_300),
+            ft.Column(
+                [
+                    ft.Text(
+                        f["original_name"], size=13,
+                        weight=ft.FontWeight.W_500,
+                        max_lines=1,
+                        overflow=ft.TextOverflow.ELLIPSIS,
+                    ),
+                    ft.Row([status_icon, ft.Text(status_text, size=11, color=status_color)], spacing=4),
+                    ft.Text(
+                        f'{format_size(f["size"])}  |  {format_ts(f["upload_date"])}',
+                        size=10, color=ft.Colors.GREY_600,
+                    ),
+                ],
+                spacing=2,
+                expand=True,
+            ),
+            ft.IconButton(
+                ft.Icons.DOWNLOAD_ROUNDED,
+                tooltip="Baixar" if can_download else "Indisponivel",
+                icon_color=ft.Colors.GREEN_400 if can_download else ft.Colors.GREY_700,
+                icon_size=20,
+                disabled=not can_download,
+                on_click=lambda e, fi=f: do_download(fi),
+            ),
+        ]
+
+        if is_mine:
+            row_controls.append(
+                ft.IconButton(
+                    ft.Icons.DELETE_OUTLINE,
+                    tooltip="Remover",
+                    icon_color=ft.Colors.RED_400,
+                    icon_size=20,
+                    on_click=lambda e, fid=fid, fn=f["original_name"]: confirm_delete(fid, fn),
+                ),
+            )
 
         return ft.Container(
             content=ft.Row(
-                [
-                    ft.Icon(icon, size=26, color=ft.Colors.BLUE_300),
-                    ft.Column(
-                        [
-                            ft.Text(
-                                f["original_name"], size=13,
-                                weight=ft.FontWeight.W_500,
-                                max_lines=1,
-                                overflow=ft.TextOverflow.ELLIPSIS,
-                            ),
-                            ft.Row([status_icon, ft.Text(status_text, size=11, color=status_color)], spacing=4),
-                            ft.Text(
-                                f'{format_size(f["size"])}  |  {format_ts(f["upload_date"])}',
-                                size=10, color=ft.Colors.GREY_600,
-                            ),
-                        ],
-                        spacing=2,
-                        expand=True,
-                    ),
-                    ft.IconButton(
-                        ft.Icons.DOWNLOAD_ROUNDED,
-                        tooltip="Baixar" if can_download else "Indisponivel",
-                        icon_color=ft.Colors.GREEN_400 if can_download else ft.Colors.GREY_700,
-                        icon_size=20,
-                        disabled=not can_download,
-                        on_click=lambda e, fi=f: do_download(fi),
-                    ),
-                    ft.IconButton(
-                        ft.Icons.DELETE_OUTLINE,
-                        tooltip="Remover",
-                        icon_color=ft.Colors.RED_400,
-                        icon_size=20,
-                        on_click=lambda e, fid=fid, fn=f["original_name"]: confirm_delete(fid, fn),
-                    ),
-                ],
+                row_controls,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
             padding=ft.padding.symmetric(horizontal=16, vertical=10),
@@ -649,6 +669,12 @@ def main(page: ft.Page):
 
         def on_open(ws):
             ws.send(json.dumps({"p2p_host": p2p.host, "p2p_port": p2p.port}))
+            connection_banner.visible = False
+            try:
+                page.update()
+            except Exception:
+                pass
+            refresh_files()
 
         def on_message(ws, message):
             try:
@@ -685,9 +711,18 @@ def main(page: ft.Page):
                 pass
 
         def on_error(ws, error):
-            pass
+            connection_banner.visible = True
+            try:
+                page.update()
+            except Exception:
+                pass
 
         def on_close(ws, code, msg):
+            connection_banner.visible = True
+            try:
+                page.update()
+            except Exception:
+                pass
             time.sleep(5)
             try:
                 start_ws()
@@ -702,7 +737,11 @@ def main(page: ft.Page):
                 )
                 ws.run_forever(ping_interval=30, ping_timeout=10)
             except Exception:
-                pass
+                connection_banner.visible = True
+                try:
+                    page.update()
+                except Exception:
+                    pass
 
         ws_thread = threading.Thread(target=run, daemon=True)
         ws_thread.start()
@@ -753,6 +792,7 @@ def main(page: ft.Page):
             ),
             # ── Notification ──
             notification_banner,
+            connection_banner,
             # ── Toolbar ──
             ft.Container(
                 content=ft.Column(

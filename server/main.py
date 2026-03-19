@@ -265,9 +265,12 @@ async def download_file(file_id: int, request: Request):
 
 @app.delete("/api/files/{file_id}")
 async def delete_file(file_id: int, x_username: str = Header(..., alias="X-Username")):
+    username = x_username.strip()
     rec = await db.get_file(file_id)
     if not rec:
         raise HTTPException(404, "Nao encontrado")
+    if rec["uploader"] != username:
+        raise HTTPException(403, "Apenas quem compartilhou pode remover")
     if rec["on_server"] and rec["filename"]:
         path = config.UPLOAD_DIR / rec["filename"]
         if path.exists():
