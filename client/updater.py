@@ -10,7 +10,7 @@ import sys
 import os
 from pathlib import Path
 
-CURRENT_VERSION = "2.1.0"
+CURRENT_VERSION = "2.2.0"
 GITHUB_REPO = "Xinao123/Samoanosboxv2"
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
