@@ -15,6 +15,7 @@ from datetime import datetime
 from config import load_config, save_config
 from api_client import SamoanosBoxClient, ApiError
 from p2p_server import P2PServer
+from updater import check_for_update, download_and_install, CURRENT_VERSION
 
 
 def format_size(b: int) -> str:
@@ -297,6 +298,105 @@ def main(page: ft.Page):
         bgcolor="#33ff9800",
         border_radius=8,
     )
+
+    # ── Update Banner ──
+    update_info_ref = {}  # guarda info da update pra usar nos callbacks
+
+    update_banner = ft.Container(
+        visible=False,
+        padding=ft.padding.symmetric(horizontal=16, vertical=10),
+        bgcolor="#331976d2",
+        border_radius=8,
+    )
+
+    def check_update_on_startup():
+        """Checa update em background ao abrir o app."""
+        try:
+            info = check_for_update()
+            if not info:
+                return
+
+            update_info_ref["data"] = info
+
+            def do_update(e):
+                update_banner.visible = False
+                page.update()
+
+                if info.get("download_url"):
+                    snack("Baixando atualizacao...")
+
+                    def dl():
+                        def on_prog(recv, total):
+                            pass
+                        ok = download_and_install(info["download_url"], on_progress=on_prog)
+                        if ok:
+                            snack("Instalador baixado! Fechando pra atualizar...")
+                            time.sleep(2)
+                            p2p.stop()
+                            stop_tray()
+                            page.window.destroy()
+                        else:
+                            from updater import open_release_page
+                            open_release_page(info["browser_url"])
+
+                    threading.Thread(target=dl, daemon=True).start()
+                else:
+                    from updater import open_release_page
+                    open_release_page(info["browser_url"])
+
+            def dismiss_update(e):
+                update_banner.visible = False
+                page.update()
+
+            changelog = info.get("changelog", "")
+            if len(changelog) > 120:
+                changelog = changelog[:120] + "..."
+
+            update_banner.content = ft.Column(
+                [
+                    ft.Row(
+                        [
+                            ft.Icon(ft.Icons.SYSTEM_UPDATE, size=18, color=ft.Colors.BLUE_300),
+                            ft.Text(
+                                f"Nova versao disponivel: v{info['version']}  (atual: v{CURRENT_VERSION})",
+                                size=13, weight=ft.FontWeight.W_500, color=ft.Colors.BLUE_300,
+                            ),
+                        ],
+                        spacing=8,
+                    ),
+                    ft.Text(changelog, size=11, color=ft.Colors.GREY_400) if changelog else ft.Container(),
+                    ft.Row(
+                        [
+                            ft.ElevatedButton(
+                                "Atualizar agora",
+                                icon=ft.Icons.DOWNLOAD,
+                                style=ft.ButtonStyle(
+                                    shape=ft.RoundedRectangleBorder(radius=8),
+                                    bgcolor=ft.Colors.BLUE_700,
+                                    color=ft.Colors.WHITE,
+                                ),
+                                height=32,
+                                on_click=do_update,
+                            ),
+                            ft.TextButton(
+                                "Depois",
+                                style=ft.ButtonStyle(color=ft.Colors.GREY_500),
+                                on_click=dismiss_update,
+                            ),
+                        ],
+                        spacing=8,
+                    ),
+                ],
+                spacing=6,
+            )
+            update_banner.visible = True
+            try:
+                page.update()
+            except Exception:
+                pass
+
+        except Exception:
+            pass
 
     search_field = ft.TextField(
         hint_text="Buscar arquivos...", prefix_icon=ft.Icons.SEARCH,
@@ -921,6 +1021,7 @@ def main(page: ft.Page):
             # ── Banners ──
             notification_banner,
             connection_banner,
+            update_banner,
             # ── Toolbar ──
             ft.Container(
                 content=ft.Column(
@@ -983,6 +1084,8 @@ def main(page: ft.Page):
         restore_shares()
         refresh_files()
         start_ws()
+        # Checa update em background
+        threading.Thread(target=check_update_on_startup, daemon=True).start()
 
     # ── Auto-enter ──
 
