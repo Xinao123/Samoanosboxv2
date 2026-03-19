@@ -30,7 +30,7 @@ def build():
         "--windowed",
         "--noconfirm",
         "--clean",
-        # "--icon", "assets/icon.ico",
+         "--icon", "assets/icon.ico",
         "--add-data", f"config.py{sep}.",
         "--add-data", f"api_client.py{sep}.",
         "--add-data", f"p2p_server.py{sep}.",
