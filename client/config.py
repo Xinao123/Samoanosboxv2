@@ -4,11 +4,13 @@ from pathlib import Path
 
 CONFIG_DIR = Path.home() / ".samoanosbox"
 CONFIG_FILE = CONFIG_DIR / "config.json"
+DEFAULT_P2P_PORT = 53333
 
 DEFAULTS = {
     "server_url": "http://localhost:7000",
     "username": "",
     "download_dir": str(Path.home() / "Downloads"),
+    "p2p_port": DEFAULT_P2P_PORT,
     "shared_files": {},  # file_id → local_path
 }
 

@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from datetime import datetime
 
-from config import load_config, save_config
+from config import load_config, save_config, DEFAULT_P2P_PORT
 from api_client import SamoanosBoxClient, ApiError
 from p2p_server import P2PServer
 from updater import check_for_update, download_and_install, CURRENT_VERSION
@@ -54,6 +54,16 @@ def estimate_download_time(size_bytes: int, is_p2p: bool) -> str:
     if secs < 3600:
         return f"~{int(secs / 60)}min"
     return f"~{secs / 3600:.1f}h"
+
+
+def parse_p2p_port(value) -> int:
+    try:
+        port = int(str(value).strip())
+    except Exception as ex:
+        raise ValueError("Porta P2P invalida. Use um numero entre 1024 e 65535.") from ex
+    if port < 1024 or port > 65535:
+        raise ValueError("Porta P2P invalida. Use um numero entre 1024 e 65535.")
+    return port
 
 
 FILE_ICONS = {
@@ -121,8 +131,13 @@ def tray_notify(title: str, msg: str):
 
 def main(page: ft.Page):
     cfg = load_config()
+    try:
+        cfg["p2p_port"] = parse_p2p_port(cfg.get("p2p_port", DEFAULT_P2P_PORT))
+    except ValueError:
+        cfg["p2p_port"] = DEFAULT_P2P_PORT
+        save_config(cfg)
     api = SamoanosBoxClient(cfg["server_url"], cfg.get("username", ""))
-    p2p = P2PServer()
+    p2p = P2PServer(cfg["p2p_port"])
 
     page.title = "SamoanosBox"
     page.theme_mode = ft.ThemeMode.DARK
@@ -222,7 +237,7 @@ def main(page: ft.Page):
             show_main_view()
         except Exception as ex:
             entry_loading.visible = False
-            entry_status.value = f"Nao conectou: {ex}"
+            entry_status.value = f"Erro ao iniciar: {ex}"
             page.update()
 
     def on_entry_key(e):
@@ -809,12 +824,30 @@ def main(page: ft.Page):
     def show_settings(e):
         dl_field = ft.TextField(label="Pasta de Download", value=cfg.get("download_dir", ""),
                                 expand=True, border_radius=10)
+        p2p_port_field = ft.TextField(
+            label="Porta P2P (startup)",
+            value=str(cfg.get("p2p_port", DEFAULT_P2P_PORT)),
+            width=180,
+            border_radius=10,
+            keyboard_type=ft.KeyboardType.NUMBER,
+        )
 
         def save(e):
+            try:
+                new_p2p_port = parse_p2p_port(p2p_port_field.value)
+            except ValueError as ex:
+                snack(str(ex), error=True)
+                return
+
             cfg["download_dir"] = dl_field.value
+            changed_port = new_p2p_port != cfg.get("p2p_port", DEFAULT_P2P_PORT)
+            cfg["p2p_port"] = new_p2p_port
             save_config(cfg)
             dlg.open = False
-            snack("Configuracoes salvas!")
+            if changed_port:
+                snack("Configuracoes salvas! Reinicie o app para aplicar a nova porta P2P.")
+            else:
+                snack("Configuracoes salvas!")
             page.update()
 
         def close(e):
@@ -826,8 +859,8 @@ def main(page: ft.Page):
             content=ft.Container(content=ft.Column([
                 ft.Text(f"Servidor: {api.server_url}", size=12, color=ft.Colors.GREY_400),
                 ft.Text(f"Usuario: {api.username}", size=12, color=ft.Colors.GREY_400),
-                ft.Text(f"P2P: {p2p.host}:{p2p.port}", size=12, color=ft.Colors.GREY_400),
-                ft.Divider(), dl_field,
+                ft.Text(f"P2P ativo: {p2p.host}:{p2p.port}", size=12, color=ft.Colors.GREY_400),
+                ft.Divider(), dl_field, p2p_port_field,
             ], spacing=10, tight=True), width=400),
             actions=[ft.TextButton("Fechar", on_click=close),
                      ft.ElevatedButton("Salvar", on_click=save)],
@@ -1095,8 +1128,10 @@ def main(page: ft.Page):
             api.health()
             p2p.start()
             show_main_view()
-        except Exception:
+        except Exception as ex:
             show_entry_view()
+            entry_status.value = f"Falha ao iniciar: {ex}"
+            page.update()
     else:
         show_entry_view()
 

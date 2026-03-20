@@ -145,9 +145,11 @@ class SamoanosBoxClient:
                 # Primeiro testa se o peer responde (HEAD request com 5s timeout)
                 try:
                     with httpx.Client(timeout=5) as c:
-                        c.head(f"http://{p2p_host}:{p2p_port}/download/{file_id}")
-                except Exception:
-                    raise Exception("Peer nao respondeu")
+                        head_resp = c.head(f"http://{p2p_host}:{p2p_port}/download/{file_id}")
+                        if head_resp.status_code < 200 or head_resp.status_code >= 300:
+                            raise Exception(f"peer respondeu HTTP {head_resp.status_code}")
+                except Exception as head_ex:
+                    raise Exception(str(head_ex) or "Peer nao respondeu")
 
                 result = self._download_stream(
                     f"http://{p2p_host}:{p2p_port}/download/{file_id}",
@@ -195,7 +197,11 @@ class SamoanosBoxClient:
             pass
 
         if p2p_fail_reason:
-            raise ApiError(404, f"P2P indisponivel ({p2p_fail_reason}) e backup ainda em envio")
+            raise ApiError(
+                404,
+                f"P2P indisponivel (porta bloqueada/arquivo nao servido). "
+                f"Detalhe: {p2p_fail_reason}. Backup ainda em envio",
+            )
         raise ApiError(404, "P2P indisponivel e backup ainda em envio")
 
     def _download_stream(self, url, headers, partial_path, final_path,
