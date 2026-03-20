@@ -1,72 +1,25 @@
 # SamoanosBox v2
 
-Compartilhamento de arquivos para os Samoanos.
-P2P direto + fallback pro server quando amigo esta offline.
+SamoanosBox e um sistema privado de compartilhamento de arquivos para grupos fechados.  
+Seu objetivo e distribuir arquivos com baixa espera e manter disponibilidade mesmo quando o dono do arquivo sai da rede.
 
-## Como funciona
+## O que e
 
-```
-Pedro compartilha "game.iso" (5GB)
-  → Arquivo fica NO PC DO PEDRO (P2P ativo)
-  → Em background, sobe pro server como backup
+- Plataforma de compartilhamento ponto a ponto assistida por servidor.
+- Catalogo central de arquivos e status de disponibilidade por usuario.
+- Transferencia direta entre usuarios quando o publicador esta online.
+- Copia de contingencia para manter downloads disponiveis quando o publicador fica offline.
 
-Amigo quer baixar:
-  → Pedro ONLINE?  → Download P2P direto (velocidade maxima)
-  → Pedro OFFLINE? → Download do server (mais lento, mas funciona)
-```
+## Para que serve
 
-## Legenda de status na lista de arquivos
+- Compartilhar arquivos grandes entre membros de um mesmo grupo.
+- Reduzir o tempo de entrega com rota direta quando possivel.
+- Garantir continuidade de acesso com fallback automatico.
+- Exibir o estado real de disponibilidade de cada arquivo.
 
-- VERDE (online): "Pedro (online - P2P direto)" → download rapido
-- LARANJA (offline + backup): "Pedro (offline - via server, mais lento)" → funciona
-- VERMELHO (offline sem backup): "Pedro (offline - indisponivel)" → precisa esperar
+## Comportamento operacional
 
-## Setup
-
-### Server (Linux)
-```bash
-cd server
-pip3 install -r requirements.txt
-python3 main.py
-```
-
-### Client (Windows)
-```powershell
-cd client
-pip install -r requirements.txt
-python main.py
-```
-
-## Estrutura
-
-```
-SamoanosBox/
-├── server/
-│   ├── main.py          # API + WebSocket + storage fallback
-│   ├── database.py      # SQLite
-│   ├── config.py
-│   ├── requirements.txt
-│   └── Dockerfile
-├── client/
-│   ├── main.py          # GUI Flet
-│   ├── api_client.py    # Download P2P/server inteligente
-│   ├── p2p_server.py    # Mini HTTP server embutido
-│   ├── config.py
-│   └── requirements.txt
-├── docker-compose.yml
-└── README.md
-```
-
-## Fluxo tecnico
-
-1. Client abre → inicia mini HTTP server numa porta aleatoria
-2. Client conecta WebSocket → anuncia IP:porta P2P pro server
-3. Client compartilha arquivo → registra metadados no server + serve via P2P
-4. Em background, arquivo sobe pro server como fallback
-5. Outro client quer baixar → server informa se dono ta online e seu IP:porta
-6. Se online → download P2P direto (HTTP entre os dois PCs)
-7. Se offline → download do server (fallback)
-
-## Acesso externo
-
-Use ZeroTier, Tailscale ou bore para acesso fora da rede local.
+1. Um usuario publica um arquivo para o grupo.
+2. Enquanto o publicador esta online, o download prioriza conexao direta.
+3. Se o publicador sair da rede, o sistema usa a copia de contingencia.
+4. O usuario final recebe o arquivo pela melhor rota disponivel sem troca manual.

@@ -1,6 +1,6 @@
 """
-SamoanosBox v2.1 - GUI (Flet 0.25)
-Tray icon, tempo estimado na lista, uploader destacado, drag-drop zone.
+SamoanosBox v2.3 - GUI (Flet 0.25)
+Splash screen, drop zone, progresso visual, tray icon, auto-updater.
 """
 import flet as ft
 import threading
@@ -44,11 +44,10 @@ def format_eta(sent, total, speed):
 
 
 def estimate_download_time(size_bytes: int, is_p2p: bool) -> str:
-    """Estima tempo baseado em velocidades tipicas."""
     if is_p2p:
-        speed = 30 * 1e6  # ~30 MB/s P2P tipico
+        speed = 30 * 1e6
     else:
-        speed = 2.5 * 1e6  # ~2.5 MB/s via Starlink
+        speed = 2.5 * 1e6
     secs = size_bytes / speed
     if secs < 60:
         return f"~{int(secs)}s"
@@ -77,33 +76,27 @@ FILE_ICONS = {
 }
 
 
-# ── Tray Icon (Windows) ──
+# ── Tray Icon ──
 
 tray_icon = None
 
 
 def setup_tray(on_restore, on_quit):
-    """Configura tray icon. Silencia se pystray nao esta instalado."""
     global tray_icon
     try:
         import pystray
         from PIL import Image, ImageDraw
-
-        # Cria icone 64x64 programaticamente
         img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
         draw.ellipse([4, 4, 60, 60], fill=(59, 130, 246, 255))
         draw.polygon([(22, 40), (32, 20), (42, 40)], fill=(255, 255, 255, 255))
         draw.line([(32, 20), (32, 48)], fill=(255, 255, 255, 255), width=3)
-
         menu = pystray.Menu(
             pystray.MenuItem("Abrir SamoanosBox", on_restore, default=True),
             pystray.MenuItem("Sair", on_quit),
         )
         tray_icon = pystray.Icon("SamoanosBox", img, "SamoanosBox", menu)
         threading.Thread(target=tray_icon.run, daemon=True).start()
-    except ImportError:
-        pass  # pystray nao instalado, sem tray icon
     except Exception:
         pass
 
@@ -119,7 +112,6 @@ def stop_tray():
 
 
 def tray_notify(title: str, msg: str):
-    """Envia notificacao Windows via tray icon."""
     if tray_icon:
         try:
             tray_icon.notify(msg, title)
@@ -147,7 +139,7 @@ def main(page: ft.Page):
     upload_worker_running = False
     active_backups = {}
 
-    # ── Tray: minimizar pra bandeja ──
+    # ── Tray ──
 
     def on_tray_restore(icon=None, item=None):
         page.window.visible = True
@@ -164,7 +156,6 @@ def main(page: ft.Page):
 
     def on_window_event(e):
         if e.data == "close":
-            # Minimiza pra tray em vez de fechar
             if tray_icon:
                 page.window.visible = False
                 page.update()
@@ -175,7 +166,6 @@ def main(page: ft.Page):
 
     page.window.prevent_close = True
     page.window.on_event = on_window_event
-
     setup_tray(on_tray_restore, on_tray_quit)
 
     # ══════════════════════════════════════
@@ -273,12 +263,52 @@ def main(page: ft.Page):
     # ══════════════════════════════════════
 
     files_column = ft.Column(scroll=ft.ScrollMode.AUTO, expand=True, spacing=4)
-    share_progress = ft.ProgressBar(visible=False, value=0, bar_height=6, border_radius=5)
-    share_text = ft.Text("", size=12)
+
+    share_progress = ft.ProgressBar(visible=False, value=0, bar_height=8, border_radius=5, color=ft.Colors.BLUE_400)
+    share_pct = ft.Text("", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_300)
+    share_detail = ft.Text("", size=11, color=ft.Colors.GREY_400)
+    share_container = ft.Container(
+        visible=False,
+        content=ft.Column([
+            ft.Row([
+                ft.Icon(ft.Icons.UPLOAD_ROUNDED, size=20, color=ft.Colors.BLUE_400),
+                ft.Text("Compartilhando", size=12, weight=ft.FontWeight.W_500, color=ft.Colors.BLUE_300),
+                ft.Container(expand=True),
+                share_pct,
+            ]),
+            share_progress,
+            share_detail,
+        ], spacing=4),
+        padding=ft.padding.all(12),
+        border_radius=10,
+        bgcolor="#15448aff",
+        border=ft.border.all(1, "#30448aff"),
+    )
+
     queue_text = ft.Text("", size=11, color=ft.Colors.GREY_500)
     bg_upload_text = ft.Text("", size=11, color=ft.Colors.GREY_500)
-    download_progress = ft.ProgressBar(visible=False, value=0, bar_height=6, border_radius=5)
-    download_text = ft.Text("", size=12)
+
+    download_progress = ft.ProgressBar(visible=False, value=0, bar_height=8, border_radius=5, color=ft.Colors.GREEN_400)
+    download_pct = ft.Text("", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.GREEN_300)
+    download_detail = ft.Text("", size=11, color=ft.Colors.GREY_400)
+    download_container = ft.Container(
+        visible=False,
+        content=ft.Column([
+            ft.Row([
+                ft.Icon(ft.Icons.DOWNLOAD_ROUNDED, size=20, color=ft.Colors.GREEN_400),
+                ft.Text("Baixando", size=12, weight=ft.FontWeight.W_500, color=ft.Colors.GREEN_300),
+                ft.Container(expand=True),
+                download_pct,
+            ]),
+            download_progress,
+            download_detail,
+        ], spacing=4),
+        padding=ft.padding.all(12),
+        border_radius=10,
+        bgcolor="#15228B22",
+        border=ft.border.all(1, "#30228B22"),
+    )
+
     online_chip = ft.Text("", size=11, color=ft.Colors.GREEN_400)
     storage_chip = ft.Text("", size=11, color=ft.Colors.GREY_500)
     notification_banner = ft.Container(
@@ -300,7 +330,7 @@ def main(page: ft.Page):
     )
 
     # ── Update Banner ──
-    update_info_ref = {}  # guarda info da update pra usar nos callbacks
+    update_info_ref = {}
 
     update_banner = ft.Container(
         visible=False,
@@ -310,7 +340,6 @@ def main(page: ft.Page):
     )
 
     def check_update_on_startup():
-        """Checa update em background ao abrir o app."""
         try:
             info = check_for_update()
             if not info:
@@ -321,14 +350,10 @@ def main(page: ft.Page):
             def do_update(e):
                 update_banner.visible = False
                 page.update()
-
                 if info.get("download_url"):
                     snack("Baixando atualizacao...")
-
                     def dl():
-                        def on_prog(recv, total):
-                            pass
-                        ok = download_and_install(info["download_url"], on_progress=on_prog)
+                        ok = download_and_install(info["download_url"])
                         if ok:
                             snack("Instalador baixado! Fechando pra atualizar...")
                             time.sleep(2)
@@ -338,7 +363,6 @@ def main(page: ft.Page):
                         else:
                             from updater import open_release_page
                             open_release_page(info["browser_url"])
-
                     threading.Thread(target=dl, daemon=True).start()
                 else:
                     from updater import open_release_page
@@ -368,21 +392,13 @@ def main(page: ft.Page):
                     ft.Row(
                         [
                             ft.ElevatedButton(
-                                "Atualizar agora",
-                                icon=ft.Icons.DOWNLOAD,
-                                style=ft.ButtonStyle(
-                                    shape=ft.RoundedRectangleBorder(radius=8),
-                                    bgcolor=ft.Colors.BLUE_700,
-                                    color=ft.Colors.WHITE,
-                                ),
-                                height=32,
-                                on_click=do_update,
+                                "Atualizar agora", icon=ft.Icons.DOWNLOAD,
+                                style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8),
+                                                     bgcolor=ft.Colors.BLUE_700, color=ft.Colors.WHITE),
+                                height=32, on_click=do_update,
                             ),
-                            ft.TextButton(
-                                "Depois",
-                                style=ft.ButtonStyle(color=ft.Colors.GREY_500),
-                                on_click=dismiss_update,
-                            ),
+                            ft.TextButton("Depois", style=ft.ButtonStyle(color=ft.Colors.GREY_500),
+                                          on_click=dismiss_update),
                         ],
                         spacing=8,
                     ),
@@ -394,7 +410,6 @@ def main(page: ft.Page):
                 page.update()
             except Exception:
                 pass
-
         except Exception:
             pass
 
@@ -453,9 +468,11 @@ def main(page: ft.Page):
             pass
 
     def process_share(file_path, file_name, file_size):
+        share_container.visible = True
         share_progress.visible = True
         share_progress.value = 0
-        share_text.value = f"Calculando checksum: {file_name}..."
+        share_pct.value = "0%"
+        share_detail.value = f"Checksum: {file_name}..."
         try:
             page.update()
         except Exception:
@@ -467,18 +484,19 @@ def main(page: ft.Page):
             while chunk := f.read(65536):
                 sha.update(chunk)
                 processed += len(chunk)
+                pct = int(processed / file_size * 100) if file_size > 0 else 100
                 share_progress.value = processed / file_size if file_size > 0 else 1
-                share_text.value = (
-                    f"Checksum: {file_name} "
-                    f"{int(processed / file_size * 100) if file_size > 0 else 100}%"
-                )
+                share_pct.value = f"{pct}%"
+                share_detail.value = f"Checksum: {file_name}  ({format_size(processed)} / {format_size(file_size)})"
                 try:
                     page.update()
                 except Exception:
                     pass
 
         checksum = sha.hexdigest()
-        share_text.value = f"Registrando: {file_name}..."
+        share_detail.value = f"Registrando: {file_name}..."
+        share_pct.value = ""
+        share_progress.visible = False
         try:
             page.update()
         except Exception:
@@ -487,8 +505,7 @@ def main(page: ft.Page):
         try:
             file_id = api.register_file(file_name, file_size, checksum)
         except Exception as ex:
-            share_progress.visible = False
-            share_text.value = ""
+            share_container.visible = False
             snack(f"Erro ao registrar: {ex}", error=True)
             return
 
@@ -496,12 +513,10 @@ def main(page: ft.Page):
         cfg.setdefault("shared_files", {})[str(file_id)] = file_path
         save_config(cfg)
 
-        share_progress.visible = False
-        share_text.value = ""
+        share_container.visible = False
         snack(f"Compartilhado: {file_name} (P2P ativo)")
         refresh_files()
 
-        # Notifica via tray se janela nao esta visivel
         tray_notify("SamoanosBox", f"Compartilhado: {file_name}")
 
         backup_state = {"cancel": False}
@@ -546,10 +561,7 @@ def main(page: ft.Page):
 
     def build_file_tile(f):
         fid = f["id"]
-        icon = FILE_ICONS.get(
-            Path(f["original_name"]).suffix.lower(),
-            ft.Icons.INSERT_DRIVE_FILE,
-        )
+        icon = FILE_ICONS.get(Path(f["original_name"]).suffix.lower(), ft.Icons.INSERT_DRIVE_FILE)
         is_online = f.get("uploader_online", False)
         on_server = f.get("on_server", False)
         uploader = f.get("uploader", "?")
@@ -578,19 +590,12 @@ def main(page: ft.Page):
         can_download = is_online or on_server
         is_mine = uploader == api.username
 
-        # Info row: tamanho | data | tempo estimado
-        info_parts = f'{format_size(f["size"])}  |  {format_ts(f["upload_date"])}'
-
         row_controls = [
             ft.Icon(icon, size=26, color=ft.Colors.BLUE_300),
             ft.Column(
                 [
-                    ft.Text(
-                        f["original_name"], size=13,
-                        weight=ft.FontWeight.W_500,
-                        max_lines=1,
-                        overflow=ft.TextOverflow.ELLIPSIS,
-                    ),
+                    ft.Text(f["original_name"], size=13, weight=ft.FontWeight.W_500,
+                            max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
                     ft.Row([
                         ft.Icon(ft.Icons.PERSON, size=10, color=ft.Colors.GREY_500),
                         ft.Text(uploader, size=11, weight=ft.FontWeight.W_500, color=ft.Colors.BLUE_300),
@@ -599,20 +604,19 @@ def main(page: ft.Page):
                         ft.Text(status_label, size=10, color=status_color),
                     ], spacing=4),
                     ft.Row([
-                        ft.Text(info_parts, size=10, color=ft.Colors.GREY_600),
+                        ft.Text(f'{format_size(f["size"])}  |  {format_ts(f["upload_date"])}',
+                                size=10, color=ft.Colors.GREY_600),
                         ft.Container(width=8),
                         ft.Text(speed_hint, size=10, color=speed_color) if speed_hint else ft.Container(),
                     ], spacing=0),
                 ],
-                spacing=2,
-                expand=True,
+                spacing=2, expand=True,
             ),
             ft.IconButton(
                 ft.Icons.DOWNLOAD_ROUNDED,
                 tooltip=f"Baixar ({speed_hint})" if can_download else "Indisponivel",
                 icon_color=ft.Colors.GREEN_400 if can_download else ft.Colors.GREY_700,
-                icon_size=20,
-                disabled=not can_download,
+                icon_size=20, disabled=not can_download,
                 on_click=lambda e, fi=f: do_download(fi),
             ),
         ]
@@ -620,24 +624,17 @@ def main(page: ft.Page):
         if is_mine:
             row_controls.append(
                 ft.IconButton(
-                    ft.Icons.DELETE_OUTLINE,
-                    tooltip="Remover",
-                    icon_color=ft.Colors.RED_400,
-                    icon_size=20,
+                    ft.Icons.DELETE_OUTLINE, tooltip="Remover",
+                    icon_color=ft.Colors.RED_400, icon_size=20,
                     on_click=lambda e, fid=fid, fn=f["original_name"]: confirm_delete(fid, fn),
                 ),
             )
 
         return ft.Container(
-            content=ft.Row(
-                row_controls,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            ),
+            content=ft.Row(row_controls, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             padding=ft.padding.symmetric(horizontal=16, vertical=10),
-            border_radius=8,
-            ink=True,
-            bgcolor="#0affffff",
-            border=ft.border.all(1, "#10ffffff"),
+            border_radius=8, ink=True,
+            bgcolor="#0affffff", border=ft.border.all(1, "#10ffffff"),
         )
 
     # ── Refresh ──
@@ -667,12 +664,11 @@ def main(page: ft.Page):
                     [
                         ft.Icon(ft.Icons.CLOUD_UPLOAD, size=52, color=ft.Colors.GREY_700),
                         ft.Text("Nenhum arquivo ainda", size=15, color=ft.Colors.GREY_500),
-                        ft.Text("Clique em Compartilhar ou arraste arquivos", size=12, color=ft.Colors.GREY_600),
+                        ft.Text("Clique na area acima para compartilhar", size=12, color=ft.Colors.GREY_600),
                     ],
                     horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                     alignment=ft.MainAxisAlignment.CENTER,
-                    spacing=8,
-                    expand=True,
+                    spacing=8, expand=True,
                 )
             )
         else:
@@ -690,18 +686,14 @@ def main(page: ft.Page):
 
     def show_notification(text, icon=ft.Icons.INFO_OUTLINE, color=ft.Colors.BLUE_400):
         notification_banner.content = ft.Row(
-            [
-                ft.Icon(icon, size=16, color=color),
-                ft.Text(text, size=12, color=ft.Colors.GREY_300, expand=True),
-            ],
+            [ft.Icon(icon, size=16, color=color),
+             ft.Text(text, size=12, color=ft.Colors.GREY_300, expand=True)],
             spacing=8,
         )
         notification_banner.bgcolor = color
         notification_banner.border_radius = 8
         notification_banner.visible = True
         page.update()
-
-        # Tambem notifica via tray se janela nao visivel
         tray_notify("SamoanosBox", text)
 
         def hide():
@@ -717,9 +709,11 @@ def main(page: ft.Page):
     # ── Download ──
 
     def do_download(file_info):
+        download_container.visible = True
         download_progress.visible = True
         download_progress.value = 0
-        download_text.value = "Conectando..."
+        download_pct.value = ""
+        download_detail.value = f"Conectando a {file_info.get('uploader', '?')}..."
         page.update()
 
         def run():
@@ -728,9 +722,11 @@ def main(page: ft.Page):
                     download_progress.value = recv / total if total > 0 else 1
                     pct = int(recv / total * 100) if total > 0 else 100
                     eta = format_eta(recv, total, speed)
-                    download_text.value = (
-                        f"DL {format_size(recv)}/{format_size(total)} "
-                        f"{pct}% | {speed:.1f} MB/s {eta}"
+                    download_pct.value = f"{pct}%"
+                    download_detail.value = (
+                        f"{file_info['original_name']}  "
+                        f"{format_size(recv)}/{format_size(total)}  "
+                        f"{speed:.1f} MB/s  {eta}"
                     )
                     try:
                         page.update()
@@ -738,7 +734,7 @@ def main(page: ft.Page):
                         pass
 
                 def on_status(s):
-                    download_text.value = s
+                    download_detail.value = s
                     try:
                         page.update()
                     except Exception:
@@ -747,16 +743,13 @@ def main(page: ft.Page):
                 saved = api.download_file(
                     file_info,
                     cfg.get("download_dir", str(Path.home() / "Downloads")),
-                    on_progress=on_prog,
-                    on_status=on_status,
+                    on_progress=on_prog, on_status=on_status,
                 )
-                download_progress.visible = False
-                download_text.value = ""
+                download_container.visible = False
                 snack(f"Salvo: {Path(saved).name} (verificado)")
                 tray_notify("SamoanosBox", f"Download completo: {Path(saved).name}")
             except ApiError as ex:
-                download_progress.visible = False
-                download_text.value = ""
+                download_container.visible = False
                 if "checksum" in ex.detail.lower():
                     snack(f"Arquivo corrompido! {ex.detail}", error=True)
                 else:
@@ -766,8 +759,7 @@ def main(page: ft.Page):
                 except Exception:
                     pass
             except Exception as ex:
-                download_progress.visible = False
-                download_text.value = ""
+                download_container.visible = False
                 snack(f"Erro: {ex}", error=True)
                 try:
                     page.update()
@@ -800,15 +792,12 @@ def main(page: ft.Page):
             page.update()
 
         dlg = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("Confirmar"),
+            modal=True, title=ft.Text("Confirmar"),
             content=ft.Text(f'Remover "{filename}"?'),
             actions=[
                 ft.TextButton("Cancelar", on_click=no),
-                ft.TextButton(
-                    "Remover", on_click=yes,
-                    style=ft.ButtonStyle(color=ft.Colors.RED_400),
-                ),
+                ft.TextButton("Remover", on_click=yes,
+                              style=ft.ButtonStyle(color=ft.Colors.RED_400)),
             ],
         )
         page.overlay.append(dlg)
@@ -818,11 +807,8 @@ def main(page: ft.Page):
     # ── Settings ──
 
     def show_settings(e):
-        dl_field = ft.TextField(
-            label="Pasta de Download",
-            value=cfg.get("download_dir", ""),
-            expand=True, border_radius=10,
-        )
+        dl_field = ft.TextField(label="Pasta de Download", value=cfg.get("download_dir", ""),
+                                expand=True, border_radius=10)
 
         def save(e):
             cfg["download_dir"] = dl_field.value
@@ -837,23 +823,14 @@ def main(page: ft.Page):
 
         dlg = ft.AlertDialog(
             title=ft.Text("Configuracoes"),
-            content=ft.Container(
-                content=ft.Column(
-                    [
-                        ft.Text(f"Servidor: {api.server_url}", size=12, color=ft.Colors.GREY_400),
-                        ft.Text(f"Usuario: {api.username}", size=12, color=ft.Colors.GREY_400),
-                        ft.Text(f"P2P: {p2p.host}:{p2p.port}", size=12, color=ft.Colors.GREY_400),
-                        ft.Divider(),
-                        dl_field,
-                    ],
-                    spacing=10, tight=True,
-                ),
-                width=400,
-            ),
-            actions=[
-                ft.TextButton("Fechar", on_click=close),
-                ft.ElevatedButton("Salvar", on_click=save),
-            ],
+            content=ft.Container(content=ft.Column([
+                ft.Text(f"Servidor: {api.server_url}", size=12, color=ft.Colors.GREY_400),
+                ft.Text(f"Usuario: {api.username}", size=12, color=ft.Colors.GREY_400),
+                ft.Text(f"P2P: {p2p.host}:{p2p.port}", size=12, color=ft.Colors.GREY_400),
+                ft.Divider(), dl_field,
+            ], spacing=10, tight=True), width=400),
+            actions=[ft.TextButton("Fechar", on_click=close),
+                     ft.ElevatedButton("Salvar", on_click=save)],
         )
         page.overlay.append(dlg)
         dlg.open = True
@@ -895,16 +872,12 @@ def main(page: ft.Page):
                 if ev == "file_added" and who != api.username:
                     fname = data.get("filename", "?")
                     fsize = format_size(data.get("size", 0))
-                    show_notification(
-                        f"{who} compartilhou: {fname} ({fsize})",
-                        ft.Icons.UPLOAD_FILE, ft.Colors.BLUE_400,
-                    )
+                    show_notification(f"{who} compartilhou: {fname} ({fsize})",
+                                      ft.Icons.UPLOAD_FILE, ft.Colors.BLUE_400)
                     refresh_files()
                 elif ev == "file_deleted" and who != api.username:
-                    show_notification(
-                        f"{who} removeu: {data.get('filename', '?')}",
-                        ft.Icons.DELETE, ft.Colors.ORANGE_400,
-                    )
+                    show_notification(f"{who} removeu: {data.get('filename', '?')}",
+                                      ft.Icons.DELETE, ft.Colors.ORANGE_400)
                     refresh_files()
                 elif ev == "user_status":
                     users = data.get("online", [])
@@ -971,22 +944,28 @@ def main(page: ft.Page):
     #   LAYOUT
     # ══════════════════════════════════════
 
-    # Drop zone visual (abre picker ao clicar)
     drop_zone = ft.Container(
-        content=ft.Column(
+        content=ft.Row(
             [
-                ft.Icon(ft.Icons.UPLOAD_FILE, size=28, color=ft.Colors.BLUE_400),
-                ft.Text("Arraste arquivos aqui ou clique", size=12, color=ft.Colors.GREY_500),
+                ft.Icon(ft.Icons.ADD_CIRCLE_OUTLINE, size=32, color=ft.Colors.BLUE_400),
+                ft.Column(
+                    [
+                        ft.Text("Clique para compartilhar arquivos", size=13,
+                                weight=ft.FontWeight.W_500, color=ft.Colors.GREY_300),
+                        ft.Text("Seus amigos poderao baixar direto de voce via P2P", size=11,
+                                color=ft.Colors.GREY_600),
+                    ],
+                    spacing=2,
+                ),
             ],
-            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-            alignment=ft.MainAxisAlignment.CENTER,
-            spacing=4,
+            spacing=16, alignment=ft.MainAxisAlignment.CENTER,
         ),
-        border=ft.border.all(2, "#20ffffff"),
-        border_radius=10,
-        padding=ft.padding.symmetric(vertical=16),
+        border=ft.border.all(1, "#25448aff"),
+        border_radius=12,
+        padding=ft.padding.symmetric(vertical=18, horizontal=20),
         on_click=open_picker,
         ink=True,
+        bgcolor="#08448aff",
     )
 
     main_view = ft.Column(
@@ -995,23 +974,17 @@ def main(page: ft.Page):
             ft.Container(
                 content=ft.Row(
                     [
-                        ft.Row(
-                            [
-                                ft.Icon(ft.Icons.CLOUD, size=22, color=ft.Colors.BLUE_400),
-                                ft.Text("SamoanosBox", size=17, weight=ft.FontWeight.BOLD),
-                                online_chip,
-                            ],
-                            spacing=10,
-                        ),
-                        ft.Row(
-                            [
-                                storage_chip,
-                                ft.IconButton(ft.Icons.SETTINGS, tooltip="Config", icon_size=19, on_click=show_settings),
-                                ft.IconButton(ft.Icons.REFRESH, tooltip="Atualizar", icon_size=19, on_click=lambda e: refresh_files()),
-                                ft.IconButton(ft.Icons.LOGOUT, tooltip="Sair", icon_size=19, icon_color=ft.Colors.RED_400, on_click=do_logout),
-                            ],
-                            spacing=0,
-                        ),
+                        ft.Row([
+                            ft.Icon(ft.Icons.CLOUD, size=22, color=ft.Colors.BLUE_400),
+                            ft.Text("SamoanosBox", size=17, weight=ft.FontWeight.BOLD),
+                            online_chip,
+                        ], spacing=10),
+                        ft.Row([
+                            storage_chip,
+                            ft.IconButton(ft.Icons.SETTINGS, tooltip="Config", icon_size=19, on_click=show_settings),
+                            ft.IconButton(ft.Icons.REFRESH, tooltip="Atualizar", icon_size=19, on_click=lambda e: refresh_files()),
+                            ft.IconButton(ft.Icons.LOGOUT, tooltip="Sair", icon_size=19, icon_color=ft.Colors.RED_400, on_click=do_logout),
+                        ], spacing=0),
                     ],
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                 ),
@@ -1027,31 +1000,13 @@ def main(page: ft.Page):
                 content=ft.Column(
                     [
                         drop_zone,
-                        ft.Row(
-                            [
-                                ft.Container(content=search_field, expand=True),
-                                ft.ElevatedButton(
-                                    "Compartilhar",
-                                    icon=ft.Icons.SHARE,
-                                    style=ft.ButtonStyle(
-                                        shape=ft.RoundedRectangleBorder(radius=10),
-                                        bgcolor=ft.Colors.BLUE_700,
-                                        color=ft.Colors.WHITE,
-                                    ),
-                                    height=40,
-                                    on_click=open_picker,
-                                ),
-                            ],
-                            spacing=12,
-                        ),
-                        share_progress,
-                        share_text,
+                        search_field,
+                        share_container,
                         queue_text,
                         bg_upload_text,
-                        download_progress,
-                        download_text,
+                        download_container,
                     ],
-                    spacing=4,
+                    spacing=6,
                 ),
                 padding=ft.padding.symmetric(horizontal=20, vertical=8),
             ),
@@ -1069,6 +1024,31 @@ def main(page: ft.Page):
     # ══════════════════════════════════════
     #   NAVEGACAO
     # ══════════════════════════════════════
+    splash_view = ft.Column(
+        [
+            ft.Stack(
+                [
+                    ft.ProgressRing(width=80, height=80, stroke_width=4, color=ft.Colors.BLUE_400),
+                    ft.Container(
+                        content=ft.Icon(ft.Icons.SETTINGS, size=36, color=ft.Colors.GREY_400),
+                        width=80, height=80,
+                        alignment=ft.alignment.center,
+                    ),
+                ],
+                width=80, height=80,
+            ),
+            ft.Container(height=16),
+            ft.Text("Carregando...", size=16, color=ft.Colors.GREY_400),
+        ],
+        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+        alignment=ft.MainAxisAlignment.CENTER,
+        expand=True,
+    )
+
+    def show_splash():
+        page.controls.clear()
+        page.controls.append(splash_view)
+        page.update()
 
     def show_entry_view():
         page.on_keyboard_event = on_entry_key
@@ -1084,12 +1064,12 @@ def main(page: ft.Page):
         restore_shares()
         refresh_files()
         start_ws()
-        # Checa update em background
         threading.Thread(target=check_update_on_startup, daemon=True).start()
 
-    # ── Auto-enter ──
+    # ── Auto-enter com splash ──
 
     if cfg.get("username"):
+        show_splash()
         api.server_url = cfg["server_url"]
         api.username = cfg["username"]
         try:

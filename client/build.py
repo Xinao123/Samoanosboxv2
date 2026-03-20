@@ -11,13 +11,19 @@ import shutil
 from pathlib import Path
 
 APP_NAME = "SamoanosBox"
+BASE_DIR = Path(__file__).resolve().parent
 
 
 def build():
-    for d in [Path("dist"), Path("build")]:
+    dist_dir = BASE_DIR / "dist"
+    build_dir = BASE_DIR / "build"
+
+    for d in [dist_dir, build_dir]:
         if d.exists():
             shutil.rmtree(d)
-    spec = Path(f"{APP_NAME}.spec")
+        d.mkdir(parents=True, exist_ok=True)
+
+    spec = BASE_DIR / f"{APP_NAME}.spec"
     if spec.exists():
         spec.unlink()
 
@@ -30,22 +36,24 @@ def build():
         "--windowed",
         "--noconfirm",
         "--clean",
-         "--icon", "assets/icon.ico",
-        "--add-data", f"config.py{sep}.",
-        "--add-data", f"api_client.py{sep}.",
-        "--add-data", f"p2p_server.py{sep}.",
+        "--distpath", str(dist_dir),
+        "--workpath", str(build_dir),
+        "--icon", str(BASE_DIR / "assets" / "icon.ico"),
+        "--add-data", f"{BASE_DIR / 'config.py'}{sep}.",
+        "--add-data", f"{BASE_DIR / 'api_client.py'}{sep}.",
+        "--add-data", f"{BASE_DIR / 'p2p_server.py'}{sep}.",
         "--hidden-import", "flet",
         "--hidden-import", "websocket",
         "--hidden-import", "pystray",
         "--hidden-import", "PIL",
-        "main.py",
+        str(BASE_DIR / "main.py"),
     ]
 
     print(f"[BUILD] {' '.join(cmd)}")
-    result = subprocess.run(cmd)
+    result = subprocess.run(cmd, cwd=BASE_DIR)
 
     if result.returncode == 0:
-        print(f"\n[OK] Executavel em: dist/{APP_NAME}/")
+        print(f"\n[OK] Executavel em: {BASE_DIR / 'dist' / APP_NAME}")
         print(f"[OK] Agora compile installer/samoanosbox.nsi no NSIS")
     else:
         print(f"\n[ERRO] Build falhou ({result.returncode})")
