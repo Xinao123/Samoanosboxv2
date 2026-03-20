@@ -11,6 +11,7 @@ DEFAULTS = {
     "username": "",
     "download_dir": str(Path.home() / "Downloads"),
     "p2p_port": DEFAULT_P2P_PORT,
+    "p2p_advertise_host": "",
     "shared_files": {},  # file_id → local_path
 }
 

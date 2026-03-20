@@ -131,6 +131,7 @@ def tray_notify(title: str, msg: str):
 
 def main(page: ft.Page):
     cfg = load_config()
+    cfg["p2p_advertise_host"] = str(cfg.get("p2p_advertise_host", "")).strip()
     try:
         cfg["p2p_port"] = parse_p2p_port(cfg.get("p2p_port", DEFAULT_P2P_PORT))
     except ValueError:
@@ -824,6 +825,11 @@ def main(page: ft.Page):
     def show_settings(e):
         dl_field = ft.TextField(label="Pasta de Download", value=cfg.get("download_dir", ""),
                                 expand=True, border_radius=10)
+        p2p_host_field = ft.TextField(
+            label="IP P2P anunciado (opcional)",
+            value=cfg.get("p2p_advertise_host", ""),
+            border_radius=10,
+        )
         p2p_port_field = ft.TextField(
             label="Porta P2P (startup)",
             value=str(cfg.get("p2p_port", DEFAULT_P2P_PORT)),
@@ -842,6 +848,7 @@ def main(page: ft.Page):
             cfg["download_dir"] = dl_field.value
             changed_port = new_p2p_port != cfg.get("p2p_port", DEFAULT_P2P_PORT)
             cfg["p2p_port"] = new_p2p_port
+            cfg["p2p_advertise_host"] = p2p_host_field.value.strip()
             save_config(cfg)
             dlg.open = False
             if changed_port:
@@ -860,7 +867,7 @@ def main(page: ft.Page):
                 ft.Text(f"Servidor: {api.server_url}", size=12, color=ft.Colors.GREY_400),
                 ft.Text(f"Usuario: {api.username}", size=12, color=ft.Colors.GREY_400),
                 ft.Text(f"P2P ativo: {p2p.host}:{p2p.port}", size=12, color=ft.Colors.GREY_400),
-                ft.Divider(), dl_field, p2p_port_field,
+                ft.Divider(), dl_field, p2p_port_field, p2p_host_field,
             ], spacing=10, tight=True), width=400),
             actions=[ft.TextButton("Fechar", on_click=close),
                      ft.ElevatedButton("Salvar", on_click=save)],
@@ -888,22 +895,26 @@ def main(page: ft.Page):
         ws_url = f"{ws_url}/ws/{api.username}"
 
         def on_open(ws):
-            announce_host = p2p.host
-            try:
-                sock = getattr(ws, "sock", None)
-                raw_sock = getattr(sock, "sock", None) if sock else None
-                local = None
-                if raw_sock and hasattr(raw_sock, "getsockname"):
-                    local = raw_sock.getsockname()
-                elif sock and hasattr(sock, "getsockname"):
-                    local = sock.getsockname()
+            manual_host = str(cfg.get("p2p_advertise_host", "")).strip()
+            announce_host = manual_host or p2p.host
+            if not manual_host:
+                try:
+                    sock = getattr(ws, "sock", None)
+                    raw_sock = getattr(sock, "sock", None) if sock else None
+                    local = None
+                    if raw_sock and hasattr(raw_sock, "getsockname"):
+                        local = raw_sock.getsockname()
+                    elif sock and hasattr(sock, "getsockname"):
+                        local = sock.getsockname()
 
-                if isinstance(local, tuple) and local:
-                    local_ip = str(local[0])
-                    if local_ip and local_ip not in ("0.0.0.0", "::", "::1") and not local_ip.startswith("127."):
-                        announce_host = local_ip
-            except Exception:
-                pass
+                    if isinstance(local, tuple) and local:
+                        local_ip = str(local[0])
+                        if local_ip and local_ip not in ("0.0.0.0", "::", "::1") and not local_ip.startswith("127."):
+                            announce_host = local_ip
+                except Exception:
+                    pass
+
+            p2p.host = announce_host
 
             ws.send(json.dumps({"p2p_host": announce_host, "p2p_port": p2p.port}))
             connection_banner.visible = False
@@ -1113,6 +1124,8 @@ def main(page: ft.Page):
         page.controls.clear()
         page.controls.append(main_view)
         page.update()
+        if p2p.last_warning:
+            show_notification(p2p.last_warning, ft.Icons.WARNING_AMBER_ROUNDED, ft.Colors.ORANGE_400)
         restore_shares()
         refresh_files()
         start_ws()

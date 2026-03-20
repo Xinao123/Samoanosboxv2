@@ -32,6 +32,12 @@ class SamoanosBoxClient:
     def _url(self, path: str) -> str:
         return f"{self.server_url}{path}"
 
+    def _peer_base_url(self, host: str, port: int) -> str:
+        host = str(host).strip()
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        return f"http://{host}:{int(port)}"
+
     def _check(self, r: httpx.Response) -> dict:
         if r.status_code >= 400:
             try:
@@ -144,15 +150,16 @@ class SamoanosBoxClient:
 
                 # Primeiro testa se o peer responde (HEAD request com 5s timeout)
                 try:
+                    peer_base = self._peer_base_url(p2p_host, p2p_port)
                     with httpx.Client(timeout=5) as c:
-                        head_resp = c.head(f"http://{p2p_host}:{p2p_port}/download/{file_id}")
+                        head_resp = c.head(f"{peer_base}/download/{file_id}")
                         if head_resp.status_code < 200 or head_resp.status_code >= 300:
                             raise Exception(f"peer respondeu HTTP {head_resp.status_code}")
                 except Exception as head_ex:
                     raise Exception(str(head_ex) or "Peer nao respondeu")
 
                 result = self._download_stream(
-                    f"http://{p2p_host}:{p2p_port}/download/{file_id}",
+                    f"{peer_base}/download/{file_id}",
                     {}, partial_path, save_path, total, resume_from, on_progress,
                     timeout=P2P_TIMEOUT,
                 )

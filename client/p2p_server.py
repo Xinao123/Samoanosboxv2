@@ -2,7 +2,9 @@
 SamoanosBox v2 - P2P Mini Server
 HTTP server embutido no client que serve arquivos direto pros peers.
 """
+import os
 import socket
+import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -114,6 +116,39 @@ class P2PServer:
         self.host = get_local_ip()
         self.server: HTTPServer | None = None
         self.thread: threading.Thread | None = None
+        self.last_warning = ""
+
+    def _ensure_windows_firewall_rule(self) -> str:
+        if os.name != "nt":
+            return ""
+
+        rule_name = f"SamoanosBox P2P {self.port}"
+        try:
+            check_cmd = [
+                "netsh", "advfirewall", "firewall", "show", "rule", f"name={rule_name}",
+            ]
+            check = subprocess.run(check_cmd, capture_output=True, text=True, timeout=10)
+            check_out = (check.stdout or "") + (check.stderr or "")
+            needs_add = (
+                check.returncode != 0
+                or "No rules match" in check_out
+                or "Nenhuma regra corresponde" in check_out
+            )
+            if not needs_add:
+                return ""
+
+            add_cmd = [
+                "netsh", "advfirewall", "firewall", "add", "rule",
+                f"name={rule_name}",
+                "dir=in", "action=allow", "protocol=TCP",
+                f"localport={self.port}", "profile=private",
+            ]
+            add = subprocess.run(add_cmd, capture_output=True, text=True, timeout=10)
+            if add.returncode == 0:
+                return ""
+            return f"Nao foi possivel liberar firewall automaticamente (porta {self.port})."
+        except Exception:
+            return f"Nao foi possivel validar/liberar firewall automaticamente (porta {self.port})."
 
     def start(self):
         if self.server:
@@ -132,6 +167,7 @@ class P2PServer:
 
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
+        self.last_warning = self._ensure_windows_firewall_rule()
         print(f"[P2P] Servindo em {self.host}:{self.port}")
 
     def share_file(self, file_id: int, file_path: str):
