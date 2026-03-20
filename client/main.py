@@ -855,7 +855,24 @@ def main(page: ft.Page):
         ws_url = f"{ws_url}/ws/{api.username}"
 
         def on_open(ws):
-            ws.send(json.dumps({"p2p_host": p2p.host, "p2p_port": p2p.port}))
+            announce_host = p2p.host
+            try:
+                sock = getattr(ws, "sock", None)
+                raw_sock = getattr(sock, "sock", None) if sock else None
+                local = None
+                if raw_sock and hasattr(raw_sock, "getsockname"):
+                    local = raw_sock.getsockname()
+                elif sock and hasattr(sock, "getsockname"):
+                    local = sock.getsockname()
+
+                if isinstance(local, tuple) and local:
+                    local_ip = str(local[0])
+                    if local_ip and local_ip not in ("0.0.0.0", "::", "::1") and not local_ip.startswith("127."):
+                        announce_host = local_ip
+            except Exception:
+                pass
+
+            ws.send(json.dumps({"p2p_host": announce_host, "p2p_port": p2p.port}))
             connection_banner.visible = False
             try:
                 page.update()
@@ -890,6 +907,8 @@ def main(page: ft.Page):
                             show_notification(f"{who} saiu", ft.Icons.PERSON_REMOVE, ft.Colors.GREY_500)
                     refresh_files()
                     page.update()
+                elif ev == "file_backup_ready":
+                    refresh_files()
             except Exception:
                 pass
 

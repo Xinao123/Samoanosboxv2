@@ -133,6 +133,8 @@ class SamoanosBoxClient:
                 partial_path.unlink()
                 resume_from = 0
 
+        p2p_fail_reason = ""
+
         # Tenta P2P direto (timeout rapido de 10s)
         if is_online and p2p_host and p2p_port:
             try:
@@ -155,6 +157,7 @@ class SamoanosBoxClient:
                 self._verify_checksum(result, expected_checksum, on_status)
                 return result
             except Exception as e:
+                p2p_fail_reason = str(e).strip() or "erro desconhecido"
                 if on_status:
                     on_status(f"P2P falhou ({e}), tentando server...")
 
@@ -171,7 +174,29 @@ class SamoanosBoxClient:
             self._verify_checksum(result, expected_checksum, on_status)
             return result
 
-        raise ApiError(404, "Dono offline e arquivo nao esta no server ainda")
+        # Reconsulta metadados: o backup pode ter finalizado durante a tentativa P2P.
+        try:
+            if on_status:
+                on_status("Verificando se o backup terminou...")
+            latest = next((f for f in self.list_files() if f.get("id") == file_id), None)
+            if latest and latest.get("on_server"):
+                latest_total = latest.get("size", total)
+                latest_checksum = latest.get("checksum", expected_checksum)
+                if on_status:
+                    on_status("Backup concluido. Baixando do server...")
+                result = self._download_stream(
+                    self._url(f"/api/files/{file_id}/download"),
+                    self._h, partial_path, save_path, latest_total, resume_from, on_progress,
+                    timeout=SERVER_TIMEOUT,
+                )
+                self._verify_checksum(result, latest_checksum, on_status)
+                return result
+        except Exception:
+            pass
+
+        if p2p_fail_reason:
+            raise ApiError(404, f"P2P indisponivel ({p2p_fail_reason}) e backup ainda em envio")
+        raise ApiError(404, "P2P indisponivel e backup ainda em envio")
 
     def _download_stream(self, url, headers, partial_path, final_path,
                          total, resume_from, on_progress, timeout) -> str:

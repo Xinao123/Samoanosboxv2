@@ -186,6 +186,12 @@ async def complete_upload(upload_id: str, file_id: int, x_username: str = Header
                            (safe_name, sha256.hexdigest(), file_id))
         await conn.commit()
 
+    await broadcast("file_backup_ready", {
+        "username": rec["uploader"],
+        "filename": rec["original_name"],
+        "file_id": file_id,
+    })
+
     print(f"[Upload] {rec['original_name']} salvo no server (fallback)")
     return {"ok": True}
 
