@@ -8,7 +8,7 @@
 !include "MUI2.nsh"
 
 !define PRODUCT_NAME "SamoanosBox"
-!define PRODUCT_VERSION "2.2.0"
+!define PRODUCT_VERSION "2.2.1"
 !define PRODUCT_PUBLISHER "Samoanos"
 !define PRODUCT_EXE "SamoanosBox.exe"
 !define INSTALL_DIR "$PROGRAMFILES\${PRODUCT_NAME}"
