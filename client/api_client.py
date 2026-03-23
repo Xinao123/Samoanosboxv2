@@ -8,7 +8,9 @@ import time
 from pathlib import Path
 from typing import Callable
 
-CHUNK_SIZE = 1024 * 1024
+UPLOAD_CHUNK_SIZE = 1024 * 1024
+DOWNLOAD_CHUNK_SIZE_SERVER = 1024 * 1024
+DOWNLOAD_CHUNK_SIZE_P2P = 4 * 1024 * 1024
 P2P_TIMEOUT = 10  # Segundos - se P2P nao responder, cai pro server rapido
 SERVER_TIMEOUT = 600
 
@@ -18,6 +20,11 @@ class ApiError(Exception):
         self.code = code
         self.detail = detail
         super().__init__(f"[{code}] {detail}")
+
+
+class DownloadCancelled(ApiError):
+    def __init__(self, detail: str = "Download pausado pelo usuario"):
+        super().__init__(499, detail)
 
 
 class SamoanosBoxClient:
@@ -86,7 +93,7 @@ class SamoanosBoxClient:
 
         with open(path, "rb") as f:
             while True:
-                chunk = f.read(CHUNK_SIZE)
+                chunk = f.read(UPLOAD_CHUNK_SIZE)
                 if not chunk:
                     break
                 headers = {**self._h, "Content-Type": "application/octet-stream"}
@@ -111,7 +118,8 @@ class SamoanosBoxClient:
 
     def download_file(self, file_info: dict, save_dir: str,
                       on_progress: Callable[[int, int, float], None] | None = None,
-                      on_status: Callable[[str], None] | None = None) -> str:
+                      on_status: Callable[[str], None] | None = None,
+                      should_cancel: Callable[[], bool] | None = None) -> str:
         file_id = file_info["id"]
         filename = file_info["original_name"]
         total = file_info["size"]
@@ -161,10 +169,12 @@ class SamoanosBoxClient:
                 result = self._download_stream(
                     f"{peer_base}/download/{file_id}",
                     {}, partial_path, save_path, total, resume_from, on_progress,
-                    timeout=P2P_TIMEOUT,
+                    timeout=P2P_TIMEOUT, chunk_size=DOWNLOAD_CHUNK_SIZE_P2P, should_cancel=should_cancel,
                 )
                 self._verify_checksum(result, expected_checksum, on_status)
                 return result
+            except DownloadCancelled:
+                raise
             except Exception as e:
                 p2p_fail_reason = str(e).strip() or "erro desconhecido"
                 if on_status:
@@ -178,7 +188,7 @@ class SamoanosBoxClient:
             result = self._download_stream(
                 self._url(f"/api/files/{file_id}/download"),
                 self._h, partial_path, save_path, total, resume_from, on_progress,
-                timeout=SERVER_TIMEOUT,
+                timeout=SERVER_TIMEOUT, chunk_size=DOWNLOAD_CHUNK_SIZE_SERVER, should_cancel=should_cancel,
             )
             self._verify_checksum(result, expected_checksum, on_status)
             return result
@@ -196,7 +206,7 @@ class SamoanosBoxClient:
                 result = self._download_stream(
                     self._url(f"/api/files/{file_id}/download"),
                     self._h, partial_path, save_path, latest_total, resume_from, on_progress,
-                    timeout=SERVER_TIMEOUT,
+                    timeout=SERVER_TIMEOUT, chunk_size=DOWNLOAD_CHUNK_SIZE_SERVER, should_cancel=should_cancel,
                 )
                 self._verify_checksum(result, latest_checksum, on_status)
                 return result
@@ -212,7 +222,7 @@ class SamoanosBoxClient:
         raise ApiError(404, "P2P indisponivel e backup ainda em envio")
 
     def _download_stream(self, url, headers, partial_path, final_path,
-                         total, resume_from, on_progress, timeout) -> str:
+                         total, resume_from, on_progress, timeout, chunk_size, should_cancel=None) -> str:
         t0 = time.monotonic()
         received = resume_from
 
@@ -243,13 +253,18 @@ class SamoanosBoxClient:
                     real_total = total
 
                 with open(partial_path, mode) as f:
-                    for chunk in resp.iter_bytes(chunk_size=CHUNK_SIZE):
+                    for chunk in resp.iter_bytes(chunk_size=chunk_size):
+                        if should_cancel and should_cancel():
+                            raise DownloadCancelled("Download pausado pelo usuario")
                         f.write(chunk)
                         received += len(chunk)
                         elapsed = time.monotonic() - t0
                         speed = ((received - resume_from) / elapsed / 1e6) if elapsed > 0 else 0
                         if on_progress:
                             on_progress(received, real_total, speed)
+
+        if real_total and received < real_total:
+            raise ApiError(409, "Arquivo removido pelo dono durante o download")
 
         if final_path.exists():
             stem, suffix = final_path.stem, final_path.suffix

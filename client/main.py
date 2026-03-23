@@ -13,7 +13,7 @@ from pathlib import Path
 from datetime import datetime
 
 from config import load_config, save_config, DEFAULT_P2P_PORT
-from api_client import SamoanosBoxClient, ApiError
+from api_client import SamoanosBoxClient, ApiError, DownloadCancelled
 from p2p_server import P2PServer
 from updater import check_for_update, download_and_install, CURRENT_VERSION
 
@@ -154,6 +154,13 @@ def main(page: ft.Page):
     upload_queue = queue.Queue()
     upload_worker_running = False
     active_backups = {}
+    active_download = {
+        "running": False,
+        "cancel": False,
+        "paused": False,
+        "file_info": None,
+        "last_ui_update": 0.0,
+    }
 
     # ── Tray ──
 
@@ -307,6 +314,9 @@ def main(page: ft.Page):
     download_progress = ft.ProgressBar(visible=False, value=0, bar_height=8, border_radius=5, color=ft.Colors.GREEN_400)
     download_pct = ft.Text("", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.GREEN_300)
     download_detail = ft.Text("", size=11, color=ft.Colors.GREY_400)
+    download_stop_btn = ft.TextButton("Parar", icon=ft.Icons.PAUSE, visible=False)
+    download_resume_btn = ft.TextButton("Retomar", icon=ft.Icons.PLAY_ARROW, visible=False)
+    download_actions = ft.Row([download_stop_btn, download_resume_btn], spacing=8)
     download_container = ft.Container(
         visible=False,
         content=ft.Column([
@@ -318,6 +328,7 @@ def main(page: ft.Page):
             ]),
             download_progress,
             download_detail,
+            download_actions,
         ], spacing=4),
         padding=ft.padding.all(12),
         border_radius=10,
@@ -724,17 +735,57 @@ def main(page: ft.Page):
 
     # ── Download ──
 
+    def stop_download(e=None):
+        if not active_download["running"]:
+            return
+        active_download["cancel"] = True
+        download_stop_btn.disabled = True
+        download_detail.value = "Parando download..."
+        try:
+            page.update()
+        except Exception:
+            pass
+
+    def resume_download(e=None):
+        if active_download["running"]:
+            return
+        file_info = active_download.get("file_info")
+        if not file_info:
+            snack("Nao ha download pausado para retomar.", error=True)
+            return
+        do_download(file_info)
+
     def do_download(file_info):
+        if active_download["running"]:
+            snack("Ja existe um download em andamento. Pare o atual para iniciar outro.", error=True)
+            return
+
+        active_download["running"] = True
+        active_download["cancel"] = False
+        active_download["paused"] = False
+        active_download["file_info"] = file_info
+        active_download["last_ui_update"] = 0.0
+
         download_container.visible = True
         download_progress.visible = True
         download_progress.value = 0
         download_pct.value = ""
         download_detail.value = f"Conectando a {file_info.get('uploader', '?')}..."
+        download_stop_btn.visible = True
+        download_stop_btn.disabled = False
+        download_resume_btn.visible = False
         page.update()
 
         def run():
             try:
+                def should_cancel():
+                    return bool(active_download["cancel"])
+
                 def on_prog(recv, total, speed):
+                    now = time.monotonic()
+                    if recv < total and now - active_download["last_ui_update"] < 0.2:
+                        return
+                    active_download["last_ui_update"] = now
                     download_progress.value = recv / total if total > 0 else 1
                     pct = int(recv / total * 100) if total > 0 else 100
                     eta = format_eta(recv, total, speed)
@@ -750,6 +801,10 @@ def main(page: ft.Page):
                         pass
 
                 def on_status(s):
+                    now = time.monotonic()
+                    if now - active_download["last_ui_update"] < 0.2:
+                        return
+                    active_download["last_ui_update"] = now
                     download_detail.value = s
                     try:
                         page.update()
@@ -760,12 +815,48 @@ def main(page: ft.Page):
                     file_info,
                     cfg.get("download_dir", str(Path.home() / "Downloads")),
                     on_progress=on_prog, on_status=on_status,
+                    should_cancel=should_cancel,
                 )
+                active_download["running"] = False
+                active_download["paused"] = False
+                active_download["file_info"] = None
                 download_container.visible = False
+                download_stop_btn.visible = False
+                download_resume_btn.visible = False
                 snack(f"Salvo: {Path(saved).name} (verificado)")
                 tray_notify("SamoanosBox", f"Download completo: {Path(saved).name}")
+            except DownloadCancelled:
+                active_download["running"] = False
+                active_download["paused"] = True
+                download_stop_btn.visible = False
+                download_resume_btn.visible = True
+                download_resume_btn.disabled = False
+                download_pct.value = ""
+                download_detail.value = "Download pausado. Clique em Retomar."
+                try:
+                    page.update()
+                except Exception:
+                    pass
             except ApiError as ex:
+                if active_download["cancel"]:
+                    active_download["running"] = False
+                    active_download["paused"] = True
+                    download_stop_btn.visible = False
+                    download_resume_btn.visible = True
+                    download_resume_btn.disabled = False
+                    download_pct.value = ""
+                    download_detail.value = "Download pausado. Clique em Retomar."
+                    try:
+                        page.update()
+                    except Exception:
+                        pass
+                    return
+                active_download["running"] = False
+                active_download["paused"] = False
+                active_download["file_info"] = None
                 download_container.visible = False
+                download_stop_btn.visible = False
+                download_resume_btn.visible = False
                 if "checksum" in ex.detail.lower():
                     snack(f"Arquivo corrompido! {ex.detail}", error=True)
                 else:
@@ -775,7 +866,12 @@ def main(page: ft.Page):
                 except Exception:
                     pass
             except Exception as ex:
+                active_download["running"] = False
+                active_download["paused"] = False
+                active_download["file_info"] = None
                 download_container.visible = False
+                download_stop_btn.visible = False
+                download_resume_btn.visible = False
                 snack(f"Erro: {ex}", error=True)
                 try:
                     page.update()
@@ -783,6 +879,9 @@ def main(page: ft.Page):
                     pass
 
         threading.Thread(target=run, daemon=True).start()
+
+    download_stop_btn.on_click = stop_download
+    download_resume_btn.on_click = resume_download
 
     # ── Delete ──
 
@@ -794,8 +893,14 @@ def main(page: ft.Page):
                 backup = active_backups.get(file_id)
                 if backup:
                     backup["cancel"] = True
-                api.delete_file(file_id)
+                local_path = cfg.get("shared_files", {}).get(str(file_id))
                 p2p.unshare_file(file_id)
+                try:
+                    api.delete_file(file_id)
+                except ApiError:
+                    if local_path and Path(local_path).exists():
+                        p2p.share_file(file_id, local_path)
+                    raise
                 cfg.get("shared_files", {}).pop(str(file_id), None)
                 save_config(cfg)
                 snack(f"Removido: {filename}")
